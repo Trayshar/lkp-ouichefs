@@ -28,6 +28,8 @@ struct dentry *ouichefs_mount(struct file_system_type *fs_type, int flags,
 	else
 		pr_info("'%s' mount success\n", dev_name);
 
+	create_ouichefs_partition_entry(dev_name);
+	
 	return dentry;
 }
 
@@ -36,6 +38,8 @@ struct dentry *ouichefs_mount(struct file_system_type *fs_type, int flags,
  */
 void ouichefs_kill_sb(struct super_block *sb)
 {
+	remove_ouichefs_partition_entry(sb->s_id);
+
 	kill_block_super(sb);
 
 	pr_info("unmounted disk\n");
@@ -67,6 +71,11 @@ static int __init ouichefs_init(void)
 	}
 
 	pr_info("module loaded\n");
+
+	ret = init_sysfs_interface();
+ 	if (ret < 0)
+		goto err;
+
 	return 0;
 
 err_inode:
@@ -78,6 +87,8 @@ err:
 static void __exit ouichefs_exit(void)
 {
 	int ret;
+
+	cleanup_sysfs_interface();
 
 	ret = unregister_filesystem(&ouichefs_file_system_type);
 	if (ret)
