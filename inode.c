@@ -27,8 +27,8 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	struct ouichefs_inode_info *ci = NULL;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
-	uint32_t inode_block = (ino / OUICHEFS_INODES_PER_BLOCK) + 1;
-	uint32_t inode_shift = ino % OUICHEFS_INODES_PER_BLOCK;
+	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
+	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 	int ret;
 
 	/* Fail if ino is out of range */
@@ -71,6 +71,7 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
 	ci->index_block = le32_to_cpu(cinode->index_block);
+	ci->snapshot_id = le32_to_cpu(cinode->snapshot_id);
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_fop = &ouichefs_dir_ops;
@@ -183,6 +184,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 		goto put_inode;
 	}
 	ci->index_block = bno;
+	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);

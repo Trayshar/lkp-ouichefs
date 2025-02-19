@@ -32,7 +32,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 	int ret = 0, bno;
 
 	/* If block number exceeds filesize, fail */
-	if (iblock >= OUICHEFS_BLOCK_SIZE >> 2)
+	if (iblock >= OUICHEFS_INDEX_BLOCK_LEN)
 		return -EFBIG;
 
 	/* Read index block from disk */
@@ -147,6 +147,8 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 
 		/* Update inode metadata */
 		inode->i_blocks = (inode->i_size / OUICHEFS_BLOCK_SIZE) + 1;
+		// TODO: Investigate if this is correct - isn't the +1 up here
+		// already accounting for the modulus?
 		if ((inode->i_size % OUICHEFS_BLOCK_SIZE) != 0)
 			inode->i_blocks++;
 		inode->i_mtime = inode->i_ctime = current_time(inode);
