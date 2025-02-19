@@ -61,8 +61,8 @@ static int ouichefs_write_inode(struct inode *inode,
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh;
 	uint32_t ino = inode->i_ino;
-	uint32_t inode_block = (ino / OUICHEFS_INODES_PER_BLOCK) + 1;
-	uint32_t inode_shift = ino % OUICHEFS_INODES_PER_BLOCK;
+	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
+	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 
 	if (ino >= sbi->nr_inodes)
 		return 0;
@@ -87,6 +87,7 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_inode->i_blocks = inode->i_blocks;
 	disk_inode->i_nlink = inode->i_nlink;
 	disk_inode->index_block = ci->index_block;
+	disk_inode->snapshot_id = ci->snapshot_id;
 
 	mark_buffer_dirty(bh);
 	sync_dirty_buffer(bh);
@@ -102,7 +103,7 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	struct buffer_head *bh;
 
 	/* Flush superblock */
-	bh = sb_bread(sb, 0);
+	bh = sb_bread(sb, OUICHEFS_SB_BLOCK_NR);
 	if (!bh)
 		return -EIO;
 	disk_sb = (struct ouichefs_sb_info *)bh->b_data;
@@ -112,8 +113,13 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	disk_sb->nr_istore_blocks = sbi->nr_istore_blocks;
 	disk_sb->nr_ifree_blocks = sbi->nr_ifree_blocks;
 	disk_sb->nr_bfree_blocks = sbi->nr_bfree_blocks;
+	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
 	disk_sb->nr_free_inodes = sbi->nr_free_inodes;
 	disk_sb->nr_free_blocks = sbi->nr_free_blocks;
+	disk_sb->current_snapshot_index = sbi->current_snapshot_index;
+	disk_sb->next_snapshot_id = sbi->next_snapshot_id;
+	memcpy(disk_sb->snapshots, sbi->snapshots, 
+		sizeof(disk_sb->snapshots));
 
 	mark_buffer_dirty(bh);
 	if (wait)
@@ -131,7 +137,7 @@ static int sync_ifree(struct super_block *sb, int wait)
 
 	/* Flush free inodes bitmask */
 	for (i = 0; i < sbi->nr_ifree_blocks; i++) {
-		idx = sbi->nr_istore_blocks + i + 1;
+		idx = OUICHEFS_GET_IFREE_START(sbi) + i;
 
 		bh = sb_bread(sb, idx);
 		if (!bh)
@@ -158,7 +164,7 @@ static int sync_bfree(struct super_block *sb, int wait)
 
 	/* Flush free blocks bitmask */
 	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
-		idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
+		idx = OUICHEFS_GET_BFREE_START(sbi) + i;
 
 		bh = sb_bread(sb, idx);
 		if (!bh)
@@ -271,8 +277,13 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_istore_blocks = csb->nr_istore_blocks;
 	sbi->nr_ifree_blocks = csb->nr_ifree_blocks;
 	sbi->nr_bfree_blocks = csb->nr_bfree_blocks;
+	sbi->nr_meta_blocks = csb->nr_meta_blocks;
 	sbi->nr_free_inodes = csb->nr_free_inodes;
 	sbi->nr_free_blocks = csb->nr_free_blocks;
+	sbi->current_snapshot_index = csb->current_snapshot_index;
+	sbi->next_snapshot_id = csb->next_snapshot_id;
+	memcpy(sbi->snapshots, csb->snapshots, 
+		sizeof(sbi->snapshots));
 	sb->s_fs_info = sbi;
 
 	brelse(bh);
@@ -285,7 +296,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 		goto free_sbi;
 	}
 	for (i = 0; i < sbi->nr_ifree_blocks; i++) {
-		int idx = sbi->nr_istore_blocks + i + 1;
+		int idx = OUICHEFS_GET_IFREE_START(sbi) + i;
 
 		bh = sb_bread(sb, idx);
 		if (!bh) {
@@ -307,7 +318,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 		goto free_ifree;
 	}
 	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
-		int idx = sbi->nr_istore_blocks + sbi->nr_ifree_blocks + i + 1;
+		int idx = OUICHEFS_GET_BFREE_START(sbi) + i;
 
 		bh = sb_bread(sb, idx);
 		if (!bh) {
