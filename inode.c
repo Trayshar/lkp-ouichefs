@@ -40,7 +40,8 @@ int ouichefs_ifill(struct inode* inode, bool create)
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
-	int ret = 0;
+	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
+	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 
 	pr_debug("Loading inode %lu from disk (snapshot %d)\n",
 		inode->i_ino, OUICHEFS_GET_SNAP_ID(sbi));
@@ -236,6 +237,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	if (ret < 0)
 		goto put_inode;
 	ci->index_block = bno;
+	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
