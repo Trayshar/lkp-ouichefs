@@ -178,11 +178,9 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	ci = OUICHEFS_INODE(inode);
 
 	/* Get a free block for this new inode's index */
-	bno = get_free_block(sbi);
-	if (!bno) {
-		ret = -ENOSPC;
+	ret = ouichefs_alloc_block(sb, &bno);
+	if (!ret)
 		goto put_inode;
-	}
 	ci->index_block = bno;
 	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
 
@@ -292,7 +290,7 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	return 0;
 
 iput:
-	put_block(OUICHEFS_SB(sb), OUICHEFS_INODE(inode)->index_block);
+	ouichefs_put_block(sb, OUICHEFS_INODE(inode)->index_block);
 	put_inode(OUICHEFS_SB(sb), inode->i_ino);
 	iput(inode);
 end:
@@ -312,7 +310,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	struct super_block *sb = dir->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct inode *inode = d_inode(dentry);
-	struct buffer_head *bh = NULL, *bh2 = NULL;
+	struct buffer_head *bh = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
 	struct ouichefs_file_index_block *file_block = NULL;
 	uint32_t ino, bno;
@@ -363,19 +361,10 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	if (S_ISDIR(inode->i_mode))
 		goto scrub;
 	for (i = 0; i < inode->i_blocks - 1; i++) {
-		char *block;
-
 		if (!file_block->blocks[i])
 			continue;
 
-		put_block(sbi, file_block->blocks[i]);
-		bh2 = sb_bread(sb, file_block->blocks[i]);
-		if (!bh2)
-			continue;
-		block = (char *)bh2->b_data;
-		memset(block, 0, OUICHEFS_BLOCK_SIZE);
-		mark_buffer_dirty(bh2);
-		brelse(bh2);
+		ouichefs_put_block(sb, file_block->blocks[i]);
 	}
 
 scrub:
@@ -400,7 +389,7 @@ clean_inode:
 	mark_inode_dirty(inode);
 
 	/* Free inode and index block from bitmap */
-	put_block(sbi, bno);
+	ouichefs_put_block(sb, bno);
 	put_inode(sbi, ino);
 
 	return 0;

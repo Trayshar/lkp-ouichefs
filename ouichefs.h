@@ -133,6 +133,12 @@ int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
 
+/* data block functions */
+int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);
+int ouichefs_cow_block(struct super_block *sb, uint32_t *bno, bool is_index_block);
+int ouichefs_get_block(struct super_block *sb, uint32_t bno);
+void ouichefs_put_block(struct super_block *sb, uint32_t bno);
+
 /* snapshot functions */
 int create_ouichefs_partition_entry(const char *dev_name);
 void remove_ouichefs_partition_entry(const char *dev_name);
@@ -144,41 +150,46 @@ extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
 extern const struct address_space_operations ouichefs_aops;
 
-/* Getters for superbock and inode */
+/* Getters for superblock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
 // Do some compile-time sanity checks
 static_assert(sizeof(struct ouichefs_metadata_block) <= OUICHEFS_BLOCK_SIZE,
-	      "ouichefs_metadata_block is bigger than a block!");
+			"ouichefs_metadata_block is bigger than a block!");
 static_assert(sizeof(struct ouichefs_sb_info) <= OUICHEFS_BLOCK_SIZE,
-	      "ouichefs_sb_info is bigger than a block!");
+			"ouichefs_sb_info is bigger than a block!");
 static_assert(sizeof(struct ouichefs_file_index_block) <= OUICHEFS_BLOCK_SIZE,
-	      "ouichefs_file_index_block is bigger than a block!");
+			"ouichefs_file_index_block is bigger than a block!");
 static_assert(sizeof(struct ouichefs_dir_block) <= OUICHEFS_BLOCK_SIZE,
-	      "ouichefs_dir_block is bigger than a block!");
+			"ouichefs_dir_block is bigger than a block!");
 static_assert(sizeof(struct ouichefs_inode) <= OUICHEFS_BLOCK_SIZE,
-	      "ouichefs_inode is bigger than a block!");
+			"ouichefs_inode is bigger than a block!");
 static_assert(OUICHEFS_MAX_SNAPSHOTS <= (1l << 8 * sizeof(ouichefs_snap_index_t)),
-	"type ouichefs_snap_index_t cannot fit OUICHEFS_MAX_SNAPSHOTS!");
+			"type ouichefs_snap_index_t cannot fit OUICHEFS_MAX_SNAPSHOTS!");
 static_assert(OUICHEFS_MAX_FILESIZE >= (1l << 22),
-	      "OUICHEFS_MAX_FILESIZE is smaller than 4MB!");
+			"OUICHEFS_MAX_FILESIZE is smaller than 4MB!");
 
- // LAYOUT HELPERS: defines some "index <> block" helpers that depend on FS layout
- #define OUICHEFS_GET_INODE_BLOCK(ino) \
- 	1 + (ino / OUICHEFS_INODES_PER_BLOCK);
- #define OUICHEFS_GET_INODE_SHIFT(ino) \
- 	(ino % OUICHEFS_INODES_PER_BLOCK) /* Offset inside the inode block */
- #define OUICHEFS_GET_IFREE_START(sbi) \
- 	1 + sbi->nr_istore_blocks
- #define OUICHEFS_GET_BFREE_START(sbi) \
- 	1 + sbi->nr_istore_blocks + sbi->nr_ifree_blocks
- #define OUICHEFS_GET_META_BLOCK(bno, sbi) \
- 	OUICHEFS_GET_BFREE_START(sbi) + sbi->nr_bfree_blocks + (bno / OUICHEFS_META_BLOCK_LEN);
- #define OUICHEFS_GET_META_SHIFT(bno) \
- 	(bno % OUICHEFS_META_BLOCK_LEN) /* Offset inside the meta block */
- #define OUICHEFS_GET_DATA_START(sbi) \
- 	OUICHEFS_GET_META_BLOCK(0, sbi) + sbi->nr_meta_blocks;
+// LAYOUT HELPERS: defines some "index <> block" helpers that depend on FS layout
+/* Get inode block for inode */
+#define OUICHEFS_GET_INODE_BLOCK(ino) \
+	(1 + (ino / OUICHEFS_INODES_PER_BLOCK))
+/* Offset inside the inode block */
+#define OUICHEFS_GET_INODE_SHIFT(ino) \
+	(ino % OUICHEFS_INODES_PER_BLOCK)
+#define OUICHEFS_GET_IFREE_START(sbi) \
+	(1 + sbi->nr_istore_blocks)
+#define OUICHEFS_GET_BFREE_START(sbi) \
+	(1 + sbi->nr_istore_blocks + sbi->nr_ifree_blocks)
+#define OUICHEFS_GET_DATA_START(sbi) \
+	(OUICHEFS_GET_BFREE_START(sbi) + sbi->nr_bfree_blocks + sbi->nr_meta_blocks)
+/* Get metadata block for data block */
+#define OUICHEFS_GET_META_BLOCK(bno, sbi) \
+	(OUICHEFS_GET_BFREE_START(sbi) + sbi->nr_bfree_blocks + \
+	((bno - OUICHEFS_GET_DATA_START(sbi)) / OUICHEFS_META_BLOCK_LEN))
+/* Offset inside the metadata block */
+#define OUICHEFS_GET_META_SHIFT(bno) \
+	((bno - OUICHEFS_GET_DATA_START(sbi)) % OUICHEFS_META_BLOCK_LEN)
 
 #endif /* _OUICHEFS_H */
