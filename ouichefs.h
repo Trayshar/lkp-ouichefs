@@ -107,20 +107,20 @@ extern const struct address_space_operations ouichefs_aops;
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
 struct ouichefs_snapshot {
-    unsigned int id;
-    struct timespec64 created;
-    struct list_head list;
+	unsigned int id;
+	struct timespec64 created;
+	struct list_head list;
 };
 
 #define OUICHEFS_DEVICE_NAME_LENGTH 16
 
 struct ouichefs_partition {
-    char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
-    struct kobject kobj;
-    struct mutex snap_lock; // synchronizes snapshot list access
-    struct list_head snapshot_list;
-    struct list_head partition_list;
-    unsigned int next_id;
+	char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
+	struct kobject kobj;
+	struct mutex snap_lock; // synchronizes snapshot list access
+	struct list_head snapshot_list;
+	struct list_head partition_list;
+	unsigned int next_id;
 };
 
 int create_ouichefs_partition_entry(const char *dev_name);
