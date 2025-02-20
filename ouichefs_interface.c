@@ -67,12 +67,12 @@ static int add_snapshot(struct ouichefs_partition *part)
     if (!snap)
         return -ENOMEM;
 
+    mutex_lock(&part->snap_lock);
     snap->id = part->next_id++;
     ktime_get_real_ts64(&now);
     snap->created = now;
     INIT_LIST_HEAD(&snap->list);
 
-    mutex_lock(&part->snap_lock);
     list_add_tail(&snap->list, &part->snapshot_list);
     mutex_unlock(&part->snap_lock);
 
