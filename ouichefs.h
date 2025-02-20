@@ -119,7 +119,7 @@ struct ouichefs_partition {
     struct kobject kobj;
     struct mutex snap_lock; // synchronizes snapshot list access
     struct list_head snapshot_list;
-    struct list_head list;
+    struct list_head partition_list;
     unsigned int next_id;
 };
 

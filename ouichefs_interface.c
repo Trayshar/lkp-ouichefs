@@ -221,7 +221,7 @@ static void partition_release(struct kobject *kobj)
 
     part = to_ouichefs_partition(kobj);
     free_snapshots(part);
-    list_del(&part->list);
+    list_del(&part->partition_list);
     kfree(part);
 }
 
@@ -272,7 +272,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
         goto error_alloc;
     }
 
-    list_add(&part->list, &ouichefs_partitions);
+    list_add(&part->partition_list, &ouichefs_partitions);
 
     pr_info("ouichefs: Partition %s registered\n", part->name);
 
@@ -287,12 +287,12 @@ void remove_ouichefs_partition_entry(const char *dev_name)
 {
     struct ouichefs_partition *part, *tmp;
 
-    list_for_each_entry_safe(part, tmp, &ouichefs_partitions, list) {
+    list_for_each_entry_safe(part, tmp, &ouichefs_partitions, partition_list) {
         if (!strcmp(part->name, dev_name)) {
             free_snapshots(part);
             sysfs_remove_group(&part->kobj, &partition_group);
             kobject_put(&part->kobj);
-            list_del(&part->list);
+            list_del(&part->partition_list);
             kfree(part);
 
             pr_info("ouichefs: sysfs entry removed for partition '%s'\n", dev_name);
