@@ -112,8 +112,10 @@ struct ouichefs_snapshot {
     struct list_head list;
 };
 
+#define OUICHEFS_DEVICE_NAME_LENGTH 16
+
 struct ouichefs_partition {
-    char name[16]; // device name, e.g. "sda"
+    char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
     struct kobject kobj;
     struct mutex snap_lock; // synchronizes snapshot list access
     struct list_head snapshot_list;

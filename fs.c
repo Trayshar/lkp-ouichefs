@@ -70,11 +70,11 @@ static int __init ouichefs_init(void)
 		goto err_inode;
 	}
 
-	pr_info("module loaded\n");
-
 	ret = init_sysfs_interface();
  	if (ret < 0)
 		goto err;
+
+	pr_info("module loaded\n");
 
 	return 0;
 

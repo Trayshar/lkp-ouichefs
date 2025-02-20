@@ -108,12 +108,12 @@ static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 static int restore_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
     struct ouichefs_snapshot *snap;
-    int found = 0;
+    bool found = false;
 
     mutex_lock(&part->snap_lock);
     list_for_each_entry(snap, &part->snapshot_list, list) {
         if (snap->id == id) {
-            found = 1;
+            found = true;
             break;
         }
     }
@@ -261,8 +261,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
         goto error_alloc;
     }
 
-    strncpy(part->name, dev_name, strlen(dev_name));
-    pr_info("dev_name: %s\n", dev_name);
+    strncpy(part->name, dev_name, OUICHEFS_DEVICE_NAME_LENGTH);
     mutex_init(&part->snap_lock);
     INIT_LIST_HEAD(&part->snapshot_list);
     part->next_id = 1;
@@ -308,7 +307,7 @@ int init_sysfs_interface(void)
 
     /* Create base sysfs directory: /sys/fs/ouichefs */
     ouichefs_kset = kset_create_and_add("ouichefs", NULL, fs_kobj);
-    //ouichefs_kset = kset_create_and_add("ouichefs", NULL, kernel_kobj);
+
     if (!ouichefs_kset)
         return -ENOMEM;
 
