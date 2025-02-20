@@ -60,7 +60,7 @@ static const struct sysfs_ops partition_sysfs_ops = {
 
 static int add_snapshot(struct ouichefs_partition *part)
 {
-    struct snapshot *snap;
+    struct ouichefs_snapshot *snap;
     struct timespec64 now;
 
     snap = kmalloc(sizeof(*snap), GFP_KERNEL);
@@ -83,7 +83,7 @@ static int add_snapshot(struct ouichefs_partition *part)
 
 static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-    struct snapshot *snap, *tmp;
+    struct ouichefs_snapshot *snap, *tmp;
     bool found = false;
 
     mutex_lock(&part->snap_lock);
@@ -107,7 +107,7 @@ static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 
 static int restore_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-    struct snapshot *snap;
+    struct ouichefs_snapshot *snap;
     int found = 0;
 
     mutex_lock(&part->snap_lock);
@@ -170,7 +170,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
                            char *buf)
 {
-    struct snapshot *snap;
+    struct ouichefs_snapshot *snap;
     ssize_t pos = 0;
     struct tm tm;
 
@@ -205,7 +205,7 @@ ATTRIBUTE_GROUPS(partition);
 
 static void free_snapshots(struct ouichefs_partition *part)
 {
-    struct snapshot *snap, *tmp;
+    struct ouichefs_snapshot *snap, *tmp;
 
     mutex_lock(&part->snap_lock);
     list_for_each_entry_safe(snap, tmp, &part->snapshot_list, list) {

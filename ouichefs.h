@@ -106,7 +106,7 @@ extern const struct address_space_operations ouichefs_aops;
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
-struct snapshot {
+struct ouichefs_snapshot {
     unsigned int id;
     struct timespec64 created;
     struct list_head list;
