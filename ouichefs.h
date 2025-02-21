@@ -107,9 +107,8 @@ extern const struct address_space_operations ouichefs_aops;
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
 struct ouichefs_snapshot {
-	unsigned int id;
-	struct timespec64 created;
-	struct list_head list;
+	uint32_t id;
+	uint64_t created;
 };
 
 #define OUICHEFS_DEVICE_NAME_LENGTH 16
