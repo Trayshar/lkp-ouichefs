@@ -62,7 +62,6 @@ static const struct sysfs_ops partition_sysfs_ops = {
 static int add_snapshot(struct ouichefs_partition *part)
 {
 	struct ouichefs_snapshot *snap;
-	struct timespec64 now;
 
 	snap = kmalloc(sizeof(*snap), GFP_KERNEL);
 	if (!snap)
@@ -70,11 +69,8 @@ static int add_snapshot(struct ouichefs_partition *part)
 
 	mutex_lock(&part->snap_lock);
 	snap->id = part->next_id++;
-	ktime_get_real_ts64(&now);
-	snap->created = now;
-	INIT_LIST_HEAD(&snap->list);
+	snap->created = ktime_get();
 
-	list_add_tail(&snap->list, &part->snapshot_list);
 	mutex_unlock(&part->snap_lock);
 
 	/* TODO: add implementation here*/
@@ -84,19 +80,7 @@ static int add_snapshot(struct ouichefs_partition *part)
 
 static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-	struct ouichefs_snapshot *snap, *tmp;
 	bool found = false;
-
-	mutex_lock(&part->snap_lock);
-	list_for_each_entry_safe(snap, tmp, &part->snapshot_list, list) {
-		if (snap->id == id) {
-			list_del(&snap->list);
-			kfree(snap);
-			found = true;
-			break;
-		}
-	}
-	mutex_unlock(&part->snap_lock);
 
 	/* TODO: add implementation here*/
 	if (found) {
@@ -108,17 +92,7 @@ static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 
 static int restore_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-	struct ouichefs_snapshot *snap;
 	bool found = false;
-
-	mutex_lock(&part->snap_lock);
-	list_for_each_entry(snap, &part->snapshot_list, list) {
-		if (snap->id == id) {
-			found = true;
-			break;
-		}
-	}
-	mutex_unlock(&part->snap_lock);
 
 	if (!found)
 		return -ENOENT;
@@ -171,21 +145,11 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-	struct ouichefs_snapshot *snap;
+	
 	ssize_t pos = 0;
-	struct tm tm;
 
-	mutex_lock(&part->snap_lock);
-	list_for_each_entry(snap, &part->snapshot_list, list) {
-		time64_to_tm(snap->created.tv_sec, 0, &tm);
-		/* prints snapshots in format ID: dd.mm.yy HH:MM:SS */
-		pos += scnprintf(buf + pos, PAGE_SIZE - pos,
-				"%u: %02d.%02d.%02ld %02d:%02d:%02d\n",
-				snap->id,
-				tm.tm_mday, tm.tm_mon + 1, (tm.tm_year + 1900) % 100,
-				tm.tm_hour, tm.tm_min, tm.tm_sec);
-	}
-	mutex_unlock(&part->snap_lock);
+	/*TODO: add implementation here*/
+
 	return pos;
 }
 
@@ -206,14 +170,7 @@ ATTRIBUTE_GROUPS(partition);
 
 static void free_snapshots(struct ouichefs_partition *part)
 {
-	struct ouichefs_snapshot *snap, *tmp;
-
-	mutex_lock(&part->snap_lock);
-	list_for_each_entry_safe(snap, tmp, &part->snapshot_list, list) {
-		list_del(&snap->list);
-		kfree(snap);
-	}
-	mutex_unlock(&part->snap_lock);
+	/* TODO: add implementation here */
 }
 
 static void partition_release(struct kobject *kobj)
