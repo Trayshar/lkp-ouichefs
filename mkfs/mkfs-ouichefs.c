@@ -61,6 +61,7 @@ struct ouichefs_superblock {
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of free inodes bitmask blocks */
 	uint32_t nr_bfree_blocks; /* Number of free blocks bitmask blocks */
+	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
