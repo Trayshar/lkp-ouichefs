@@ -73,7 +73,7 @@ struct ouichefs_superblock {
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 	/* Index in snapshots array of currently used snapshot */
 	uint8_t current_snapshot_index;
-} __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
+} __aligned(OUICHEFS_BLOCK_SIZE);
 _Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
 	       "Superblock size mismatch");
 
