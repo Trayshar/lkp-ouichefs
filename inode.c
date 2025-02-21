@@ -179,7 +179,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 
 	/* Get a free block for this new inode's index */
 	ret = ouichefs_alloc_block(sb, &bno);
-	if (!ret)
+	if (ret < 0)
 		goto put_inode;
 	ci->index_block = bno;
 	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
@@ -199,6 +199,8 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 
 	inode->i_ctime = inode->i_atime = inode->i_mtime = current_time(inode);
+	pr_debug("%s:%d: Created inode %u (index block %u)\n", __func__,
+		 __LINE__, ino, bno);
 
 	return inode;
 
@@ -383,14 +385,16 @@ clean_inode:
 	inode->i_mode = 0;
 	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
 		0;
-	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec =
-		0;
+	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec =
+		inode->i_atime.tv_nsec = 0;
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
 
 	/* Free inode and index block from bitmap */
 	ouichefs_put_block(sb, bno);
 	put_inode(sbi, ino);
+	pr_debug("%s:%d: Freed inode %u (index block %u)\n", __func__, __LINE__,
+		 ino, bno);
 
 	return 0;
 }

@@ -17,6 +17,8 @@
 /*
  * Allocates a new, free data block. This function marks the block as used in
  * the bitmap and sets the reference counter.
+ * If this function succeeds, the number of the allocated block is written into
+ * bno and 0 is returned, otherwise the return value is negative.
  */
 int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno)
 {
@@ -28,6 +30,9 @@ int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno)
 	*bno = get_free_block(sbi);
 	if (!*bno)
 		return -ENOSPC;
+
+	pr_debug("%s:%d: Allocating block %u (meta %lu)\n", __func__, __LINE__, *bno,
+		OUICHEFS_GET_META_BLOCK(*bno, sbi));
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(*bno, sbi));
@@ -85,10 +90,14 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
 }
 
 /*
- * Given a pointer to an already allocated data block, sets it to
- * a newly allocated copy of it if and only if it is referenced by
- * multiple other blocks. This function must be called
- * before any change to a data block is done!
+ * Helper method for implementing Copy-on-Write on data blocks. Given
+ * a pointer (bno) to an already allocated data block, this function
+ * reads its reference count. If it is one, nothing is done and the
+ * function returns. Otherwise, a copy of the data block is made
+ * and it's block number is written into bno.
+ * If this block is an index block (is_index_block), then the reference
+ * counts of all it's referenced blocks are updated as well.
+ * 
  * Return value: negative on error, 0 if nothing was done, 1 if a new
  * block has been allocated
  */
