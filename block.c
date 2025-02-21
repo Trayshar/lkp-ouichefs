@@ -97,7 +97,7 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
  * and it's block number is written into bno.
  * If this block is an index block (is_index_block), then the reference
  * counts of all it's referenced blocks are updated as well.
- * 
+ *
  * Return value: negative on error, 0 if nothing was done, 1 if a new
  * block has been allocated
  */

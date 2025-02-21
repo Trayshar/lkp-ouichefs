@@ -65,7 +65,7 @@ struct ouichefs_superblock {
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 	/* Index in snapshots array of currently used snapshot */
 	uint8_t current_snapshot_index;
-} __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
+} __aligned(OUICHEFS_BLOCK_SIZE);
 _Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
 	       "Superblock size mismatch");
 
@@ -338,6 +338,7 @@ static int write_metadata_blocks(int fd, struct ouichefs_superblock *sb)
 {
 	int ret = 0, i = 0;
 	char *block;
+	struct ouichefs_metadata_block *meta;
 
 	block = malloc(OUICHEFS_BLOCK_SIZE);
 	if (!block)
@@ -345,7 +346,7 @@ static int write_metadata_blocks(int fd, struct ouichefs_superblock *sb)
 	memset(block, 0, OUICHEFS_BLOCK_SIZE);
 
 	// First metadata block must have the dir_block counter set to 1
-	struct ouichefs_metadata_block *meta = block;
+	meta = (struct ouichefs_metadata_block *) block;
 	meta->refcount[0] = 1;
 	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
 	if (ret != OUICHEFS_BLOCK_SIZE) {
