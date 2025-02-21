@@ -223,4 +223,11 @@ static_assert(OUICHEFS_MAX_FILESIZE >= (1l << 22),
 #define OUICHEFS_GET_META_SHIFT(bno) \
 	((bno - OUICHEFS_GET_DATA_START(sbi)) % OUICHEFS_META_BLOCK_LEN)
 
+struct ouichefs_snapshot {
+	uint32_t id;
+	uint64_t created;
+};
+
+#define OUICHEFS_DEVICE_NAME_LENGTH 16
+
 #endif /* _OUICHEFS_H */
