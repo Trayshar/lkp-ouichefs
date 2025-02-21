@@ -72,7 +72,7 @@ static const struct sysfs_ops partition_sysfs_ops = {
 
 static int add_snapshot(struct ouichefs_partition *part)
 {
-	struct ouichefs_snapshot *snap;
+	struct ouichefs_snapshot_info *snap;
 
 	snap = kmalloc(sizeof(*snap), GFP_KERNEL);
 	if (!snap)
