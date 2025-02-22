@@ -200,7 +200,7 @@ static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 	part->kobj.kset = ouichefs_kset;
 
 	ret = kobject_init_and_add(&part->kobj, &ktype_default,
-			       NULL, "%s", partition_name);
+			       NULL, "%s", part->name);
 	if (ret) {
 		kobject_put(&part->kobj);
 		return ret;
