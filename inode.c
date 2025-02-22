@@ -27,8 +27,8 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	struct ouichefs_inode_info *ci = NULL;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
-	uint32_t inode_block = (ino / OUICHEFS_INODES_PER_BLOCK) + 1;
-	uint32_t inode_shift = ino % OUICHEFS_INODES_PER_BLOCK;
+	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
+	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 	int ret;
 
 	/* Fail if ino is out of range */
@@ -177,11 +177,9 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	ci = OUICHEFS_INODE(inode);
 
 	/* Get a free block for this new inode's index */
-	bno = get_free_block(sbi);
-	if (!bno) {
-		ret = -ENOSPC;
+	ret = ouichefs_alloc_block(sb, &bno);
+	if (ret < 0)
 		goto put_inode;
-	}
 	ci->index_block = bno;
 
 	/* Initialize inode */
@@ -199,6 +197,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 
 	inode->i_ctime = inode->i_atime = inode->i_mtime = current_time(inode);
+	pr_debug("Created inode %u (index block %u)\n", ino, bno);
 
 	return inode;
 
@@ -290,7 +289,7 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	return 0;
 
 iput:
-	put_block(OUICHEFS_SB(sb), OUICHEFS_INODE(inode)->index_block);
+	ouichefs_put_block(sb, OUICHEFS_INODE(inode)->index_block, true);
 	put_inode(OUICHEFS_SB(sb), inode->i_ino);
 	iput(inode);
 end:
@@ -310,9 +309,8 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	struct super_block *sb = dir->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct inode *inode = d_inode(dentry);
-	struct buffer_head *bh = NULL, *bh2 = NULL;
+	struct buffer_head *bh = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
-	struct ouichefs_file_index_block *file_block = NULL;
 	uint32_t ino, bno;
 	int i, f_id = -1, nr_subs = 0;
 
@@ -348,41 +346,6 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 		inode_dec_link_count(dir);
 	mark_inode_dirty(dir);
 
-	/*
-	 * Cleanup pointed blocks if unlinking a file. If we fail to read the
-	 * index block, cleanup inode anyway and lose this file's blocks
-	 * forever. If we fail to scrub a data block, don't fail (too late
-	 * anyway), just put the block and continue.
-	 */
-	bh = sb_bread(sb, bno);
-	if (!bh)
-		goto clean_inode;
-	file_block = (struct ouichefs_file_index_block *)bh->b_data;
-	if (S_ISDIR(inode->i_mode))
-		goto scrub;
-	for (i = 0; i < inode->i_blocks - 1; i++) {
-		char *block;
-
-		if (!file_block->blocks[i])
-			continue;
-
-		put_block(sbi, file_block->blocks[i]);
-		bh2 = sb_bread(sb, file_block->blocks[i]);
-		if (!bh2)
-			continue;
-		block = (char *)bh2->b_data;
-		memset(block, 0, OUICHEFS_BLOCK_SIZE);
-		mark_buffer_dirty(bh2);
-		brelse(bh2);
-	}
-
-scrub:
-	/* Scrub index block */
-	memset(file_block, 0, OUICHEFS_BLOCK_SIZE);
-	mark_buffer_dirty(bh);
-	brelse(bh);
-
-clean_inode:
 	/* Cleanup inode and mark dirty */
 	inode->i_blocks = 0;
 	OUICHEFS_INODE(inode)->index_block = 0;
@@ -392,14 +355,18 @@ clean_inode:
 	inode->i_mode = 0;
 	inode->i_ctime.tv_sec = inode->i_mtime.tv_sec = inode->i_atime.tv_sec =
 		0;
-	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec = inode->i_atime.tv_nsec =
-		0;
+	inode->i_ctime.tv_nsec = inode->i_mtime.tv_nsec =
+		inode->i_atime.tv_nsec = 0;
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
 
-	/* Free inode and index block from bitmap */
-	put_block(sbi, bno);
+	/*
+	 * Free inode and index block from bitmap, as well as clean
+	 * all associated data
+	 */
+	ouichefs_put_block(sb, bno, true);
 	put_inode(sbi, ino);
+	pr_debug("Freed inode %u (index block %u)\n", ino, bno);
 
 	return 0;
 }
