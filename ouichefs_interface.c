@@ -202,7 +202,7 @@ static const struct kobj_type ktype_default = {
 
 static struct kset *ouichefs_kset;
 
-static char *find_last_part_of_path(char *path)
+static char *find_last_part_of_path(const char *path)
 {
 	int n = strlen(path);
 	char *suffix = path + n;
@@ -221,10 +221,9 @@ static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 	int ret;
 
 	part->kobj.kset = ouichefs_kset;
-	char *partition_name = find_last_part_of_path(part->name);
 
 	ret = kobject_init_and_add(&part->kobj, &ktype_default,
-			       NULL, "%s", partition_name);
+			       NULL, "%s", part->name);
 	if (ret) {
 		kobject_put(&part->kobj);
 		return ret;
@@ -239,6 +238,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
 {
 	int ret;
 	struct ouichefs_partition *part;
+	char *partition_name;
 
 	part = kzalloc(sizeof(*part), GFP_KERNEL);
 	if (!part) {
@@ -246,7 +246,8 @@ int create_ouichefs_partition_entry(const char *dev_name)
 		goto error_alloc;
 	}
 
-	strscpy(part->name, dev_name, OUICHEFS_DEVICE_NAME_LENGTH);
+	partition_name = find_last_part_of_path(dev_name);
+	strscpy(part->name, partition_name, OUICHEFS_DEVICE_NAME_LENGTH);
 	mutex_init(&part->snap_lock);
 	INIT_LIST_HEAD(&part->snapshot_list);
 	part->next_id = 1;
