@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * ouiche_fs - a simple educational filesystem for Linux
+ *
+ * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
+ */
+#define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
+
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/fs.h>
+#include <linux/buffer_head.h>
+
+#include "ouichefs.h"
+#include "bitmap.h"
+
+/*
+ * Allocates a new, free data block. This function marks the block as used in
+ * the bitmap and sets the reference counter.
+ * If this function succeeds, the number of the allocated block is written into
+ * bno and 0 is returned, otherwise the return value is negative.
+ */
+int ouichefs_alloc_block(struct super_block *sb, uint32_t *out)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct buffer_head *bh = NULL;
+	struct ouichefs_metadata_block *mb;
+	uint32_t bno = 0;
+
+	/* Get a new, free data block */
+	bno = get_free_block(sbi);
+	if (!bno)
+		return -ENOSPC;
+
+	pr_debug("Allocating block %u (meta %u)\n", bno,
+		OUICHEFS_GET_META_BLOCK(bno, sbi));
+
+	/* Open corresponding metadata block */
+	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
+	if (unlikely(!bh)) {
+		pr_err("Failed to open metadata block for data block %d\n", bno);
+		return -EIO;
+	}
+	mb = (struct ouichefs_metadata_block *)bh->b_data;
+
+	/* Set counter to one */
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)], 1);
+	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] = 1;
+	mark_buffer_dirty(bh);
+	brelse(bh);
+
+	/* Return new block */
+	*out = bno;
+	return 0;
+}
+
+/*
+ * Increments the reference counter for the given, already used data block
+ */
+int ouichefs_get_block(struct super_block *sb, uint32_t bno)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct buffer_head *bh = NULL;
+	struct ouichefs_metadata_block *mb;
+
+	/* Sanity check */
+	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
+		pr_debug("Invalid data block number: %d\n", bno);
+		return -EINVAL;
+	}
+
+	/* Open corresponding metadata block */
+	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
+	if (unlikely(!bh)) {
+		pr_err("Failed to open metadata block for data block %d\n", bno);
+		return -EIO;
+	}
+	mb = (struct ouichefs_metadata_block *)bh->b_data;
+
+	/* Increase reference counter by one */
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)],
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] + 1);
+	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] += 1;
+	mark_buffer_dirty(bh);
+	brelse(bh);
+
+	return 0;
+}
+
+/*
+ * Decrements the reference counter for the given data block. If
+ * this was the last reference, the data block is freed. If this block
+ * is an index block, this function is called on each linked data block.
+ */
+void ouichefs_put_block(struct super_block *sb, uint32_t bno,
+	bool is_index_block)
+{
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct buffer_head *bh = NULL, *bh2 = NULL;
+	struct ouichefs_metadata_block *mb;
+	struct ouichefs_file_index_block *index;
+	bool free_data = false;
+
+	/* Sanity check */
+	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
+		pr_debug("Invalid data block number: %d\n", bno);
+		return;
+	}
+
+	/* Open corresponding metadata block */
+	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
+	if (unlikely(!bh)) {
+		pr_err("Failed to open metadata block for data block %d\n", bno);
+		return;
+	}
+	mb = (struct ouichefs_metadata_block *)bh->b_data;
+
+	/* Decrease reference counter by one */
+	free_data = mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] <= 1;
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)],
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] - 1);
+	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] -= 1;
+	mark_buffer_dirty(bh);
+	brelse(bh);
+
+	/* This was the last reference; Free data block */
+	if (free_data) {
+		bh2 = sb_bread(sb, bno);
+		if (unlikely(!bh2))
+			return; // Failed to open data block; Consider it "free"
+
+		/* If its an index block, put linked data blocks */
+		if (is_index_block) {
+			index = (struct ouichefs_file_index_block *)bh2->b_data;
+			for (int i = 0; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
+				if (!index->blocks[i])
+					break;
+				/* Safety: No metadata blocks are currently locked */
+				ouichefs_put_block(sb, index->blocks[i], false);
+			}
+		}
+
+		/* Zero-out the block */
+		memset(bh2->b_data, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh2);
+		brelse(bh2);
+		put_block(sbi, bno);
+		pr_debug("Freed block %u\n", bno);
+	}
+}

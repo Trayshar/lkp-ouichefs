@@ -14,7 +14,9 @@
 #include <linux/mpage.h>
 
 #include "ouichefs.h"
-#include "bitmap.h"
+
+static int __truncate_index_block(struct super_block *sb,
+	uint32_t index_block, uint32_t start);
 
 /*
  * Map the buffer_head passed in argument with the iblock-th block of the file
@@ -25,14 +27,13 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 				   struct buffer_head *bh_result, int create)
 {
 	struct super_block *sb = inode->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_file_index_block *index;
 	struct buffer_head *bh_index;
 	int ret = 0, bno;
 
 	/* If block number exceeds filesize, fail */
-	if (iblock >= OUICHEFS_BLOCK_SIZE >> 2)
+	if (iblock >= OUICHEFS_INDEX_BLOCK_LEN)
 		return -EFBIG;
 
 	/* Read index block from disk */
@@ -50,11 +51,9 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 			ret = 0;
 			goto brelse_index;
 		}
-		bno = get_free_block(sbi);
-		if (!bno) {
-			ret = -ENOSPC;
+		ret = ouichefs_alloc_block(sb, &bno);
+		if (ret < 0)
 			goto brelse_index;
-		}
 		index->blocks[iblock] = bno;
 	} else {
 		bno = index->blocks[iblock];
@@ -142,45 +141,31 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 	if (ret < len) {
 		pr_err("%s:%d: wrote less than asked... what do I do? nothing for now...\n",
 		       __func__, __LINE__);
-	} else {
-		uint32_t nr_blocks_old = inode->i_blocks;
+		goto end;
+	}
+	uint32_t nr_blocks_old = inode->i_blocks;
 
-		/* Update inode metadata */
-		inode->i_blocks = (inode->i_size / OUICHEFS_BLOCK_SIZE) + 1;
-		if ((inode->i_size % OUICHEFS_BLOCK_SIZE) != 0)
-			inode->i_blocks++;
-		inode->i_mtime = inode->i_ctime = current_time(inode);
-		mark_inode_dirty(inode);
+	/* Update inode metadata. The 1 is the index block */
+	inode->i_blocks = 1 + (inode->i_size / OUICHEFS_BLOCK_SIZE);
+	if ((inode->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+		inode->i_blocks++;
+	inode->i_mtime = inode->i_ctime = current_time(inode);
+	mark_inode_dirty(inode);
 
-		/* If file is smaller than before, free unused blocks */
-		if (nr_blocks_old > inode->i_blocks) {
-			int i;
-			struct buffer_head *bh_index;
-			struct ouichefs_file_index_block *index;
+	/* If file is smaller than before, free unused blocks */
+	if (nr_blocks_old > inode->i_blocks) {
+		/* Free unused blocks from page cache */
+		truncate_pagecache(inode, inode->i_size);
 
-			/* Free unused blocks from page cache */
-			truncate_pagecache(inode, inode->i_size);
-
-			/* Read index block to remove unused blocks */
-			bh_index = sb_bread(sb, ci->index_block);
-			if (!bh_index) {
-				pr_err("failed truncating '%s'. we just lost %llu blocks\n",
-				       file->f_path.dentry->d_name.name,
-				       nr_blocks_old - inode->i_blocks);
-				goto end;
-			}
-			index = (struct ouichefs_file_index_block *)
-					bh_index->b_data;
-
-			for (i = inode->i_blocks - 1; i < nr_blocks_old - 1;
-			     i++) {
-				put_block(OUICHEFS_SB(sb), index->blocks[i]);
-				index->blocks[i] = 0;
-			}
-			mark_buffer_dirty(bh_index);
-			brelse(bh_index);
+		/* delete unused blocks */
+		if (__truncate_index_block(sb, ci->index_block, inode->i_blocks - 1)) {
+			pr_err("failed truncating '%s'. we just lost %llu blocks\n",
+			       file->f_path.dentry->d_name.name,
+			       nr_blocks_old - inode->i_blocks);
+			goto end;
 		}
 	}
+
 end:
 	return ret;
 }
@@ -192,35 +177,56 @@ const struct address_space_operations ouichefs_aops = {
 	.write_end = ouichefs_write_end
 };
 
-static int ouichefs_open(struct inode *inode, struct file *file) {
+static int ouichefs_open(struct inode *inode, struct file *file)
+{
 	bool wronly = (file->f_flags & O_WRONLY) != 0;
 	bool rdwr = (file->f_flags & O_RDWR) != 0;
 	bool trunc = (file->f_flags & O_TRUNC) != 0;
 
-	if ((wronly || rdwr) && trunc && (inode->i_size != 0)) {
+	if ((wronly || rdwr) && trunc && (i_size_read(inode) != 0)) {
 		struct super_block *sb = inode->i_sb;
-		struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
-		struct ouichefs_file_index_block *index;
-		struct buffer_head *bh_index;
-		sector_t iblock;
 
-		/* Read index block from disk */
-		bh_index = sb_bread(sb, ci->index_block);
-		if (!bh_index)
-			return -EIO;
-		index = (struct ouichefs_file_index_block *)bh_index->b_data;
+		/* Remove all blocks from index blocks */
+		int ret = __truncate_index_block(sb, ci->index_block, 0);
+		if (ret)
+			return ret;
 
-		for (iblock = 0; index->blocks[iblock] != 0; iblock++) {
-			put_block(sbi, index->blocks[iblock]);
-			index->blocks[iblock] = 0;
-		}
-		inode->i_size = 0;
+		/* Update inode metadata */
+		i_size_write(inode, 0);
 		inode->i_blocks = 1;
-
-		brelse(bh_index);
+		inode->i_ctime = current_time(inode);
+		inode->i_mtime = current_time(inode);
+		mark_inode_dirty(inode);
 	}
-	
+
+	return 0;
+}
+
+static int __truncate_index_block(struct super_block *sb,
+	uint32_t index_block, uint32_t start)
+{
+	struct ouichefs_file_index_block *index;
+	struct buffer_head *bh_index;
+
+	/* Read index block from disk */
+	bh_index = sb_bread(sb, index_block);
+	if (!bh_index)
+		return -EIO;
+	index = (struct ouichefs_file_index_block *)bh_index->b_data;
+
+	/* Iterate all referenced blocks and dereference them */
+	for (uint32_t i = start; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
+		if (index->blocks[i] == 0)
+			break;
+
+		ouichefs_put_block(sb, index->blocks[i], false);
+		index->blocks[i] = 0;
+	}
+
+	mark_buffer_dirty(bh_index);
+	brelse(bh_index);
+
 	return 0;
 }
 
