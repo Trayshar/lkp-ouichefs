@@ -10,6 +10,17 @@
 
 #include "ouichefs.h"
 
+#define OUICHEFS_DEVICE_NAME_LENGTH 16
+
+struct ouichefs_partition {
+	char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
+	struct kobject kobj;
+	struct mutex snap_lock; // synchronizes snapshot list access
+	struct list_head snapshot_list;
+	struct list_head partition_list;
+	unsigned int next_id;
+};
+
 LIST_HEAD(ouichefs_partitions);
 
 #define to_ouichefs_partition(x) container_of(x, struct ouichefs_partition, kobj)
@@ -63,7 +74,7 @@ static const struct sysfs_ops partition_sysfs_ops = {
 
 static int add_snapshot(struct ouichefs_partition *part)
 {
-	struct ouichefs_snapshot *snap;
+	struct ouichefs_snapshot_info *snap;
 
 	snap = kmalloc(sizeof(*snap), GFP_KERNEL);
 	if (!snap)
