@@ -156,7 +156,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-	
+
 	ssize_t pos = 0;
 
 	/*TODO: add implementation here*/
@@ -202,11 +202,26 @@ static const struct kobj_type ktype_default = {
 
 static struct kset *ouichefs_kset;
 
+static char *find_last_part_of_path(const char *path)
+{
+	int n = strlen(path);
+	char *suffix = path + n;
+
+	while (path[--n] != '/' && 0 < n)
+		;
+
+	if (path[n] == '/')
+		suffix = path + n + 1;
+
+	return suffix;
+}
+
 static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 {
 	int ret;
 
 	part->kobj.kset = ouichefs_kset;
+
 	ret = kobject_init_and_add(&part->kobj, &ktype_default,
 			       NULL, "%s", part->name);
 	if (ret) {
@@ -223,6 +238,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
 {
 	int ret;
 	struct ouichefs_partition *part;
+	char *partition_name;
 
 	part = kzalloc(sizeof(*part), GFP_KERNEL);
 	if (!part) {
@@ -230,7 +246,8 @@ int create_ouichefs_partition_entry(const char *dev_name)
 		goto error_alloc;
 	}
 
-	strscpy(part->name, dev_name, OUICHEFS_DEVICE_NAME_LENGTH);
+	partition_name = find_last_part_of_path(dev_name);
+	strscpy(part->name, partition_name, OUICHEFS_DEVICE_NAME_LENGTH);
 	mutex_init(&part->snap_lock);
 	INIT_LIST_HEAD(&part->snapshot_list);
 	part->next_id = 1;
@@ -258,12 +275,7 @@ void remove_ouichefs_partition_entry(const char *dev_name)
 
 	list_for_each_entry_safe(part, tmp, &ouichefs_partitions, partition_list) {
 		if (!strcmp(part->name, dev_name)) {
-			free_snapshots(part);
-			sysfs_remove_group(&part->kobj, &partition_group);
 			kobject_put(&part->kobj);
-			list_del(&part->partition_list);
-			kfree(part);
-
 			pr_info("ouichefs: sysfs entry removed for partition '%s'\n", dev_name);
 			break;
 		}
