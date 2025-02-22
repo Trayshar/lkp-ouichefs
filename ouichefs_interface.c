@@ -156,7 +156,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-	
+
 	ssize_t pos = 0;
 
 	/*TODO: add implementation here*/
@@ -202,13 +202,31 @@ static const struct kobj_type ktype_default = {
 
 static struct kset *ouichefs_kset;
 
+static char *find_last_part_of_path(char *path)
+{
+	char *delim = "/";
+
+	char *p = path;
+
+	char *last;
+
+	while (p != NULL) {
+		last = p;
+		strsep(&p, delim);
+	}
+
+	return last;
+}
+
 static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 {
 	int ret;
 
 	part->kobj.kset = ouichefs_kset;
+	char *partition_name = find_last_part_of_path(part->name);
+
 	ret = kobject_init_and_add(&part->kobj, &ktype_default,
-			       NULL, "%s", part->name);
+			       NULL, "%s", partition_name);
 	if (ret) {
 		kobject_put(&part->kobj);
 		return ret;
