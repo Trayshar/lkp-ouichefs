@@ -204,18 +204,16 @@ static struct kset *ouichefs_kset;
 
 static char *find_last_part_of_path(char *path)
 {
-	char *delim = "/";
+	int n = strlen(path);
+	char *suffix = path + n;
 
-	char *p = path;
+	while (path[--n] != '/' && 0 < n)
+		;
 
-	char *last;
+	if (path[n] == '/')
+		suffix = path + n + 1;
 
-	while (p != NULL) {
-		last = p;
-		strsep(&p, delim);
-	}
-
-	return last;
+	return suffix;
 }
 
 static int create_partition_sysfs_entry(struct ouichefs_partition *part)
