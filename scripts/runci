@@ -1,0 +1,365 @@
+#!/bin/bash -e
+modulename="ouichefs"
+
+sysfs="/sys/fs/ouichefs"
+
+exit_fail() {
+	echo "test failed: $1"
+	exit 1
+}
+
+lkpmkfs
+cp ~/mkfs/test.img /tmp/img1
+cp ~/mkfs/test.img /tmp/img2
+
+mnta=/tmp/mnt1
+mntb=/tmp/mnt2
+mkdir -p $mnta
+mkdir -p $mntb
+
+check_ouichefs_normal_behavior() {
+	insmod ~/share/ouichefs.ko
+
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+	cd $mnta
+	rm -fr $mnta/*
+
+	mkdir dir
+	echo "some data" > dir/file
+	echo "some data" > file
+	echo "some data" > file2
+	mv file2 dir
+	echo "some more data" > file
+
+	ls -Ril
+	rm file
+	rm -fr dir
+	ls -Ril
+
+	rm -fr $mnta/*
+	touch file{1..65}
+	mkdir dir2
+	mv file{1..65} dir2
+	rm -fr $mnta/*
+
+	echo "data" > file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	echo "data" >> file
+	rm file
+
+	cd
+	umount $mnta
+	rmmod $modulename
+}
+
+check_sysfs_structure() {
+	insmod ~/share/ouichefs.ko
+
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+	mount -t ouichefs -o loop /tmp/img2 $mntb
+
+	for dev in loop0 loop1; do
+
+		if ! [ -d "$sysfs/$dev" ]; then
+			exit_fail "$sysfs/$dev not created!"
+		fi
+
+		for file in list create restore destroy; do
+
+			if ! [ -f "$sysfs/$dev/$file" ]; then
+				exit_fail "$sysfs/$dev/$file not created!"
+			fi
+
+		done
+	done
+
+	umount $mnta
+	umount $mntb
+
+	for dev in loop0 loop1; do
+		if [ -d "$sysfs/$dev" ]; then
+			exit_fail "$sysfs/$dev still there after unmount!"
+		fi
+	done
+
+	rmmod $modulename
+}
+
+check_create_and_list() {
+	insmod ~/share/ouichefs.ko
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+	if ! cd $mnta ; then
+		exit_fail "could not cd in the mountpoint"
+	fi
+	echo "some data" > file1
+	sleep 1
+	if ! echo 1 > $sysfs/loop0/create; then
+		exit_fail "error while creating a snapshot"
+	fi
+	echo "more data" > file2
+	sleep 1
+	if ! echo 2 > $sysfs/loop0/create; then
+		exit_fail "error while creating a snapshot"
+	fi
+	echo "even more data" > file3
+	sleep 1
+	if ! echo 3 > $sysfs/loop0/create; then
+		exit_fail "error while creating a snapshot"
+	fi
+	if ! snapshots=$(cat $sysfs/loop0/list); then
+		exit_fail "error while listing snapshots"
+	fi
+	if ! [ "$(wc -l $sysfs/loop0/list | cut -f 1 -d ' ')" -eq 3 ];
+	then
+		cat $sysfs/loop0/list
+		wc -l $sysfs/loop0/list
+		exit_fail "incorrect number of snapshots snapshots"
+	fi
+	echo "$snapshots"
+
+	cd
+	umount $mnta
+	rmmod $modulename
+}
+
+# make sure the blocks are correctly saved, even for unlink, rename and truncate
+# operations
+check_restore() {
+	insmod ~/share/ouichefs.ko
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+	if ! cd $mnta ; then
+		exit_fail "could not cd in the mountpoint"
+	fi
+
+	rm -fr $mnta/*
+	echo "some data" > file_deleted
+	mkdir dir
+	echo test > file_truncated
+	echo test > dir/file_moved
+
+	if ! echo 4 > $sysfs/loop0/create; then
+		exit_fail "error while creating a snapshot"
+	fi
+
+	set -e
+
+	rm file_deleted
+	echo to be deleted > file_temp
+	mv dir/file_moved file_moved
+	mv dir dir2
+	echo tset > file_truncated
+	echo etst > file_truncated
+
+	set +e
+
+	if ! echo 4 > $sysfs/loop0/restore; then
+		exit_fail "error while restoring"
+	fi
+
+	if [ -f file_temp ]; then
+		exit_fail "file_temp shouldn't be found!"
+	fi
+	if ! [ -f file_deleted ]; then
+		exit_fail "file_delete hasn't been restored!"
+	fi
+	if ! cat file_deleted; then
+		exit_fail "failed to read file_deleted"
+	fi
+
+	if [ -z "$(cat file_deleted)" ] || [ "$(cat file_deleted)" != "some data" ]; then
+		exit_fail "ERROR: file_deleted contains wrong data or no data"
+	fi
+
+	if ! [ -f file_truncated ]; then
+		exit_fail "file_truncated hasn't been restored!"
+	fi
+
+	if ! cat file_truncated; then
+		exit_fail "failed to read file_truncated!"
+	fi
+
+	if [ -z "$(cat file_truncated)" ] || [ "$(cat file_truncated)" = "tset" ]; then
+		echo WE HAVE:
+		cat file_truncated
+		exit_fail "ERROR: file_truncated hasn't been correctly restored!"
+	fi
+
+	if [ -z "$(cat file_truncated)" ] || [ "$(cat file_truncated)" != "test" ]; then
+		cat WE HAVE: file_truncated
+		exit_fail "ERROR: file_truncated contains wrong data or no data!"
+	fi
+
+	if [ -d dir2 ]; then
+		exit_fail "dir2 should not exist in snapshot 0"
+	fi
+
+	if ! [ -d dir ]; then
+		exit_fail "dir should exist in snapshot 0"
+	fi
+
+	if ! [ -f dir/file_moved ]; then
+		exit_fail "dir/file_moved should exist in snapshot 0"
+	fi
+
+	if [ -f file_moved ]; then
+		exit_fail "file_moved shouldn't exist in snapshot 0"
+	fi
+
+	if [ -f file_tmp ]; then
+		exit_fail "file_tmp should not exist in snapshot 0"
+	fi
+
+	cd
+	umount  $mnta
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+
+	if ! cd $mnta ; then
+		exit_fail "could not cd in the mountpoint"
+	fi
+
+	if ! cat file_deleted; then
+		exit_fail "failed to read file_deleted after remount"
+	fi
+
+	if [ -z "$(cat file_deleted)" ] || [ "$(cat file_deleted)" != "some data" ]; then
+		exit_fail "ERROR: file_deleted contains wrong data or no data"
+	fi
+
+	cd
+	umount  $mnta
+	rmmod ouichefs.ko
+
+}
+
+check_destroy() {
+	insmod ~/share/ouichefs.ko
+
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+
+	for i in $(seq 1 4); do
+		if ! echo "$i" > $sysfs/loop0/destroy; then
+			exit_fail "error while destroying snapshot $i"
+		fi
+		if grep -E "^%i:" $sysfs/loop0/list; then
+			exit_fail "snapshot $i still found after deletion!"
+		fi
+	done
+
+	umount $mnta
+
+	rmmod $modulename
+}
+
+check_restore2() {
+	insmod ~/share/ouichefs.ko
+
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+
+	cd $mnta
+
+	# write data to many snapshots
+	for i in $(seq 20); do
+		echo "data$i" > file
+		echo "data$i" >> file_build_up
+		touch "file$i"
+		if ! echo "$((i + 4))" > $sysfs/loop0/create; then
+			exit_fail "fail to create a new snapshot"
+		fi
+	done
+
+	# restore all these snapshots and check that the data is still there
+	for i in $(seq 20); do
+		if ! echo "$((i + 4))" > $sysfs/loop0/restore; then
+			exit_fail "fail to restore snapshot $((i + 4))"
+		fi
+		if ! [ "$(cat $mnta/file_build_up | wc -l)"  -eq "$i" ]; then
+			exit_fail "incorrect number of line to file_build_up $(cat $mnta/file_build_up | wc -l) instead of $i"
+		fi
+		if [ "$(cat $mnta/file)" != "data$i" ]; then
+			exit_fail "wrong data for snapshot $((i + 4))"
+		fi
+	done
+
+	cat $sysfs/loop0/list
+
+	cd
+	umount $mnta
+	mount -t ouichefs -o loop /tmp/img1 $mnta
+
+	# restore all these snapshots and check that the data is still there, even
+	# after remounting the partition
+	for i in $(seq 20); do
+		if ! echo "$((i + 4))" > $sysfs/loop0/restore; then
+			exit_fail "fail to restore snapshot $((i + 4))"
+		fi
+		if [ "$(cat $mnta/file)" != "data$i" ]; then
+			exit_fail "wrong data for snapshot $((i + 4))"
+		fi
+		# if ! echo "$i" > $sysfs/loop0/destroy; then
+		# 	echo "fail to destroy snapshot $i"
+		# fi
+	done
+
+	cd
+	umount $mnta
+
+	rmmod $modulename
+}
+
+
+echo "checking ouichefs normal behavior..."
+check_ouichefs_normal_behavior
+
+echo "checking sysfs structure..."
+check_sysfs_structure
+
+echo "checking creation and listing..."
+check_create_and_list
+
+echo "checking sysfs restore..."
+check_restore
+
+echo "checking sysfs destroy..."
+check_destroy
+
+echo "checking sysfs restore (again)..."
+check_restore2
+
+echo "checking ouichefs normal behavior (again)..."
+check_ouichefs_normal_behavior
+
+echo "checking for storage leaks"
+insmod ~/share/ouichefs.ko
+echo -n 'module ouichefs +p' > /sys/kernel/debug/dynamic_debug/control
+mount -t ouichefs -o loop /tmp/img1 $mnta
+mount -t ouichefs -o loop /tmp/img2 $mntb
+rm -rf "$mnta/*"
+rm -rf "$mntb/*"
+for i in $(seq 20); do
+	echo "$((i + 4))" > "$sysfs/loop0/destroy"
+done
+umount $mnta
+umount $mntb
+mount -t ouichefs -o loop /tmp/img1 $mnta
+mount -t ouichefs -o loop /tmp/img2 $mntb
+umount $mnta
+umount $mntb
+rmmod ouichefs
+
+rm /tmp/img1
+rm /tmp/img2
+rm -rf /tmp/mnt1
+rm -rf /tmp/mnt2
+
+echo "Checking for memory leak, please stand by..."
+echo scan > /sys/kernel/debug/kmemleak
+sleep 60
+cat /sys/kernel/debug/kmemleak

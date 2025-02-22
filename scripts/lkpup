@@ -1,0 +1,5 @@
+#!/bin/bash
+
+insmod ~/share/ouichefs.ko
+echo -n 'module ouichefs +p' > /sys/kernel/debug/dynamic_debug/control
+mount -t ouichefs -o loop ~/mkfs/test.img /mnt

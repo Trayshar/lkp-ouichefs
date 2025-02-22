@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Path to the target folder
+TARGET_FOLDER="/mnt"
+# File prefix for temporary files
+FILE_PREFIX="testfile"
+
+for ((i=0; i<100; i++))
+do
+	file_name=$(head -c 8 /dev/random | base32)
+	file_path="$TARGET_FOLDER/$file_name.txt"
+	# Write random data to the file
+	# echo "Writing to $file_path"
+	echo "$file_name $file_name $file_name" > "$file_path"
+
+	cp --reflink "$file_path" "$file_path.copy"
+	case $((RANDOM % 3)) in
+		0)
+			echo "$file_name $file_name $file_name 123" > "$file_path.copy"
+			;;
+		1)
+			echo "123" > "$file_path.copy"
+			;;
+		2)
+			echo "$file_name $file_name $file_name 123" >> "$file_path.copy"
+			;;
+	esac
+
+	if [ ! -n "$(cat $file_path)" ]; then
+		echo "Data consistency check for $file_path failed!"
+	fi
+
+	# Clean up the file after the test
+	rm -f "$file_path" "$file_path.copy"
+done

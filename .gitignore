@@ -54,3 +54,6 @@ dkms.conf
 
 # Other
 mkfs/test.img
+.cache/
+.vscode/
+compile_commands.json
