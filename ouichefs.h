@@ -7,16 +7,27 @@
 #ifndef _OUICHEFS_H
 #define _OUICHEFS_H
 
+#include <linux/build_bug.h>
 #include <linux/fs.h>
 
+// TYPE DEFINITIONS: Makes it easier to update code if we want to adjust the size of some fields
+#define ouichefs_snap_id_t uint32_t   /* Unique ID of a snapshot */
+#define ouichefs_snap_index_t uint8_t /* Data type large enough to index OUICHEFS_MAX_SNAPSHOTS */
+// All out internal block addresses are uint32_t
+
+// MAGIC values: Change at will - but be careful
 #define OUICHEFS_MAGIC 0x48434957
-
 #define OUICHEFS_SB_BLOCK_NR 0
-
 #define OUICHEFS_BLOCK_SIZE (1 << 12) /* 4 KiB */
-#define OUICHEFS_MAX_FILESIZE (1 << 22) /* 4 MiB */
-#define OUICHEFS_FILENAME_LEN 28
-#define OUICHEFS_MAX_SUBFILES 128
+
+// DERIVATIVE values; They are computed from/constraint by the layout and magic values
+/* num. of data blocks a single index block can reference */
+#define OUICHEFS_INDEX_BLOCK_LEN (OUICHEFS_BLOCK_SIZE / sizeof(uint32_t))
+#define OUICHEFS_MAX_FILESIZE (OUICHEFS_INDEX_BLOCK_LEN * OUICHEFS_BLOCK_SIZE)
+#define OUICHEFS_FILENAME_LEN 28 /* max. character length of a filename */
+#define OUICHEFS_MAX_SUBFILES 128 /* How many files a directory can hold */
+/* Maximal number of CONCURRENTLY existing snapshots */
+#define OUICHEFS_MAX_SNAPSHOTS 128
 
 /*
  * ouiche_fs partition layout
@@ -60,6 +71,12 @@ struct ouichefs_inode_info {
 #define OUICHEFS_INODES_PER_BLOCK \
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
+struct ouichefs_snapshot_info {
+	uint64_t created; /* Creation time (sec) */
+	uint32_t root_inode; /* Address of this snapshots root inode */
+	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
+};
+
 struct ouichefs_sb_info {
 	uint32_t magic; /* Magic number */
 
@@ -73,12 +90,20 @@ struct ouichefs_sb_info {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
+	/* Next available ID for snapshots */
+	ouichefs_snap_id_t next_snapshot_id;
+	/* List of all snapshots. TODO: Ordered by id maybe? */
+	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
+	/* Index in snapshots array of currently used snapshot */
+	ouichefs_snap_index_t current_snapshot_index;
+
+	/* THESE MUST ALWAYS BE LAST */
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 };
 
 struct ouichefs_file_index_block {
-	uint32_t blocks[OUICHEFS_BLOCK_SIZE >> 2];
+	uint32_t blocks[OUICHEFS_INDEX_BLOCK_LEN];
 };
 
 struct ouichefs_dir_block {
@@ -96,35 +121,51 @@ int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
 
+/* snapshot functions */
+int create_ouichefs_partition_entry(const char *dev_name);
+void remove_ouichefs_partition_entry(const char *dev_name);
+int init_sysfs_interface(void);
+void cleanup_sysfs_interface(void);
+
 /* file functions */
 extern const struct file_operations ouichefs_file_ops;
 extern const struct file_operations ouichefs_dir_ops;
 extern const struct address_space_operations ouichefs_aops;
 
-/* Getters for superbock and inode */
+/* Getters for superblock and inode */
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))
 
-struct ouichefs_snapshot {
-	uint32_t id;
-	uint64_t created;
-};
+// Do some compile-time sanity checks
+static_assert(sizeof(struct ouichefs_sb_info) <= OUICHEFS_BLOCK_SIZE,
+			"ouichefs_sb_info is bigger than a block!");
+static_assert(sizeof(struct ouichefs_file_index_block) <= OUICHEFS_BLOCK_SIZE,
+			"ouichefs_file_index_block is bigger than a block!");
+static_assert(sizeof(struct ouichefs_dir_block) <= OUICHEFS_BLOCK_SIZE,
+			"ouichefs_dir_block is bigger than a block!");
+static_assert(sizeof(struct ouichefs_inode) <= OUICHEFS_BLOCK_SIZE,
+			"ouichefs_inode is bigger than a block!");
+static_assert(OUICHEFS_MAX_SNAPSHOTS <= (1l << 8 * sizeof(ouichefs_snap_index_t)),
+			"type ouichefs_snap_index_t cannot fit OUICHEFS_MAX_SNAPSHOTS!");
+static_assert(OUICHEFS_MAX_FILESIZE >= (1l << 22),
+			"OUICHEFS_MAX_FILESIZE is smaller than 4MB!");
 
-#define OUICHEFS_DEVICE_NAME_LENGTH 16
-
-struct ouichefs_partition {
-	char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
-	struct kobject kobj;
-	struct mutex snap_lock; // synchronizes snapshot list access
-	struct list_head snapshot_list;
-	struct list_head partition_list;
-	unsigned int next_id;
-};
-
-int create_ouichefs_partition_entry(const char *dev_name);
-void remove_ouichefs_partition_entry(const char *dev_name);
-int init_sysfs_interface(void);
-void cleanup_sysfs_interface(void);
+// LAYOUT HELPERS: defines some "index <> block" helpers that depend on FS layout
+/* Get inode block for inode */
+#define OUICHEFS_GET_INODE_BLOCK(ino) \
+	(1 + (ino / ((uint32_t) OUICHEFS_INODES_PER_BLOCK)))
+/* Offset inside the inode block */
+#define OUICHEFS_GET_INODE_SHIFT(ino) \
+	(ino % OUICHEFS_INODES_PER_BLOCK)
+#define OUICHEFS_GET_IFREE_START(sbi) \
+	(1 + sbi->nr_istore_blocks)
+#define OUICHEFS_GET_BFREE_START(sbi) \
+	(1 + sbi->nr_istore_blocks + sbi->nr_ifree_blocks)
+#define OUICHEFS_GET_DATA_START(sbi) \
+	(OUICHEFS_GET_BFREE_START(sbi) + sbi->nr_bfree_blocks)
+/* Offset inside the metadata block */
+#define OUICHEFS_GET_META_SHIFT(bno) \
+	((bno - OUICHEFS_GET_DATA_START(sbi)) % OUICHEFS_META_BLOCK_LEN)
 
 #endif /* _OUICHEFS_H */

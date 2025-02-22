@@ -17,6 +17,7 @@
 #define OUICHEFS_MAX_FILESIZE (1 << 22) /* 4 MiB */
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
+#define OUICHEFS_MAX_SNAPSHOTS 128
 
 struct ouichefs_inode {
 	mode_t i_mode; /* File mode */
@@ -37,6 +38,12 @@ struct ouichefs_inode {
 #define OUICHEFS_INODES_PER_BLOCK \
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
+struct ouichefs_snapshot_info {
+	uint64_t m_time; /* Modification time (sec) */
+	uint32_t root_inode; /* Address of this snapshots root inode */
+	uint8_t id; /* Unique identifier of this snapshot */
+};
+
 struct ouichefs_superblock {
 	uint32_t magic; /* Magic number */
 
@@ -50,12 +57,20 @@ struct ouichefs_superblock {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
-	char padding[4064]; /* Padding to match block size */
-};
+	uint8_t next_snapshot_id;
+	/* List of all snapshots */
+	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
+	/* Index in snapshots array of currently used snapshot */
+	uint8_t current_snapshot_index;
+} __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
+_Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
+	       "Superblock size mismatch");
 
 struct ouichefs_file_index_block {
 	uint32_t blocks[OUICHEFS_BLOCK_SIZE >> 2];
 };
+_Static_assert(sizeof(struct ouichefs_file_index_block) == OUICHEFS_BLOCK_SIZE,
+	       "Index block size mismatch");
 
 struct ouichefs_dir_block {
 	struct ouichefs_file {
@@ -63,6 +78,8 @@ struct ouichefs_dir_block {
 		char filename[OUICHEFS_FILENAME_LEN];
 	} files[OUICHEFS_MAX_SUBFILES];
 };
+_Static_assert(sizeof(struct ouichefs_dir_block) == OUICHEFS_BLOCK_SIZE,
+	       "Dir block size mismatch");
 
 static inline void usage(char *appname)
 {
@@ -111,8 +128,14 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 	sb->nr_istore_blocks = htole32(nr_istore_blocks);
 	sb->nr_ifree_blocks = htole32(nr_ifree_blocks);
 	sb->nr_bfree_blocks = htole32(nr_bfree_blocks);
+	// The -1 are the root inode and the dir block it points to
 	sb->nr_free_inodes = htole32(nr_inodes - 1);
 	sb->nr_free_blocks = htole32(nr_data_blocks - 1);
+	sb->current_snapshot_index = 1;
+	sb->next_snapshot_id = htole32(2);
+	sb->snapshots[0].m_time = htole32(0);
+	sb->snapshots[0].root_inode = htole32(1);
+	sb->snapshots[0].id = 1;
 
 	ret = write(fd, sb, sizeof(struct ouichefs_superblock));
 	if (ret != sizeof(struct ouichefs_superblock)) {
