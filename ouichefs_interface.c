@@ -274,12 +274,7 @@ void remove_ouichefs_partition_entry(const char *dev_name)
 
 	list_for_each_entry_safe(part, tmp, &ouichefs_partitions, partition_list) {
 		if (!strcmp(part->name, dev_name)) {
-			free_snapshots(part);
-			sysfs_remove_group(&part->kobj, &partition_group);
 			kobject_put(&part->kobj);
-			list_del(&part->partition_list);
-			kfree(part);
-
 			pr_info("ouichefs: sysfs entry removed for partition '%s'\n", dev_name);
 			break;
 		}
