@@ -9,11 +9,7 @@
 
 #include <linux/build_bug.h>
 #include <linux/fs.h>
-
-// TYPE DEFINITIONS: Makes it easier to update code if we want to adjust the size of some fields
-#define ouichefs_snap_id_t uint32_t   /* Unique ID of a snapshot */
-#define ouichefs_snap_index_t uint8_t /* Data type large enough to index OUICHEFS_MAX_SNAPSHOTS */
-// All out internal block addresses are uint32_t
+#include "snapshot.h"
 
 // MAGIC values: Change at will - but be careful
 #define OUICHEFS_MAGIC 0x48434957
@@ -85,12 +81,6 @@ struct ouichefs_inode_info {
 
 #define OUICHEFS_INODES_PER_BLOCK \
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
-
-struct ouichefs_snapshot_info {
-	uint64_t created; /* Creation time (sec) */
-	uint32_t root_inode; /* Address of this snapshots root inode */
-	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
-};
 
 struct ouichefs_sb_info {
 	uint32_t magic; /* Magic number */
