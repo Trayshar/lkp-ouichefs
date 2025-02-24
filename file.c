@@ -21,24 +21,38 @@ static int __truncate_index_block(struct super_block *sb,
 /*
  * Map the buffer_head passed in argument with the iblock-th block of the file
  * represented by inode. If the requested block is not allocated and create is
- * true, allocate a new block on disk and map it.
+ * true, allocate a new block on disk and map it. If cow is true, check if block
+ * is writeable and allocate a copy if not.
  */
 static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
-				   struct buffer_head *bh_result, int create)
+				   struct buffer_head *bh_result, bool create, bool cow)
 {
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_file_index_block *index;
 	struct buffer_head *bh_index;
-	int ret = 0, bno;
+	uint32_t bno;
+	int ret = 0;
 
 	/* If block number exceeds filesize, fail */
 	if (iblock >= OUICHEFS_INDEX_BLOCK_LEN)
 		return -EFBIG;
 
+	/* Get index block for this inode; If it is shared between different
+	 * inodes and we want to write, make a copy */
+	if (cow) {
+		ret = ouichefs_cow_block(sb, &ci->index_block, true);
+		if (unlikely(ret < 0))
+			return ret;
+
+		/* Update inode to point to new copy of the index block */
+		if (ret > 0)
+			mark_inode_dirty(inode);
+	}
+
 	/* Read index block from disk */
 	bh_index = sb_bread(sb, ci->index_block);
-	if (!bh_index)
+	if (unlikely(!bh_index))
 		return -EIO;
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
@@ -46,18 +60,33 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 	 * Check if iblock is already allocated. If not and create is true,
 	 * allocate it. Else, get the physical block number.
 	 */
-	if (index->blocks[iblock] == 0) {
+	bno = index->blocks[iblock];
+	if (bno == 0) {
 		if (!create) {
 			ret = 0;
 			goto brelse_index;
 		}
 		ret = ouichefs_alloc_block(sb, &bno);
-		if (ret < 0)
+		if (unlikely(ret < 0))
 			goto brelse_index;
+
 		index->blocks[iblock] = bno;
-	} else {
-		bno = index->blocks[iblock];
+		mark_buffer_dirty(bh_index);
+	} else if (cow) {
+		/* Check if this block is shared; Copy it if it is */
+		ret = ouichefs_cow_block(sb, &bno, false);
+		if (unlikely(ret < 0))
+			goto brelse_index;
+
+		/* Update index block to point to newly allocated copy */
+		if (ret > 0) {
+			index->blocks[iblock] = bno;
+			mark_buffer_dirty(bh_index);
+		}
 	}
+
+	pr_debug("Mapped sector %llu to block %u (cow=%i)\n",
+		iblock, bno, cow);
 
 	/* Map the physical block to the given buffer_head */
 	map_bh(bh_result, sb, bno);
@@ -68,13 +97,25 @@ brelse_index:
 	return ret;
 }
 
+static int ouichefs_file_get_block_ro(struct inode *inode, sector_t iblock,
+	struct buffer_head *bh_result, int create)
+{
+	return ouichefs_file_get_block(inode, iblock, bh_result, false, false);
+}
+
+static int ouichefs_file_get_block_cow(struct inode *inode, sector_t iblock,
+	struct buffer_head *bh_result, int create)
+{
+	return ouichefs_file_get_block(inode, iblock, bh_result, !!create, true);
+}
+
 /*
  * Called by the page cache to read a page from the physical disk and map it in
  * memory.
  */
 static void ouichefs_readahead(struct readahead_control *rac)
 {
-	mpage_readahead(rac, ouichefs_file_get_block);
+	mpage_readahead(rac, ouichefs_file_get_block_ro);
 }
 
 /*
@@ -83,7 +124,9 @@ static void ouichefs_readahead(struct readahead_control *rac)
  */
 static int ouichefs_writepage(struct page *page, struct writeback_control *wbc)
 {
-	return block_write_full_page(page, ouichefs_file_get_block, wbc);
+	// TODO: This may be overkill, since this could copy ALL shared blocks and
+	// not just those that are dirty; But how would I do that?
+	return block_write_full_page(page, ouichefs_file_get_block_cow, wbc);
 }
 
 /*
@@ -113,7 +156,7 @@ static int ouichefs_write_begin(struct file *file,
 
 	/* prepare the write */
 	err = block_write_begin(mapping, pos, len, pagep,
-				ouichefs_file_get_block);
+		ouichefs_file_get_block_cow);
 	/* if this failed, reclaim newly allocated blocks */
 	if (err < 0) {
 		pr_err("%s:%d: newly allocated blocks reclaim not implemented yet\n",
@@ -157,7 +200,8 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 		/* Free unused blocks from page cache */
 		truncate_pagecache(inode, inode->i_size);
 
-		/* delete unused blocks */
+		/* delete unused blocks. Note that we already CoW'ed the index block
+		 * in write_begin, so this should be safe */
 		if (__truncate_index_block(sb, ci->index_block, inode->i_blocks - 1)) {
 			pr_err("failed truncating '%s'. we just lost %llu blocks\n",
 			       file->f_path.dentry->d_name.name,
@@ -186,9 +230,15 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	if ((wronly || rdwr) && trunc && (i_size_read(inode) != 0)) {
 		struct super_block *sb = inode->i_sb;
 		struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+		int ret;
+
+		/* Check if we can modify the index block, clone it otherwise */
+		ret = ouichefs_cow_block(sb, &ci->index_block, true);
+		if (unlikely(ret < 0))
+			return ret;
 
 		/* Remove all blocks from index blocks */
-		int ret = __truncate_index_block(sb, ci->index_block, 0);
+		ret = __truncate_index_block(sb, ci->index_block, 0);
 		if (ret)
 			return ret;
 
@@ -203,6 +253,11 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/*
+ * Internal function that puts all data blocks from 'start' until the end.
+ * Assumptions:
+ * - the given index block is valid and is not referenced multiple times
+ */
 static int __truncate_index_block(struct super_block *sb,
 	uint32_t index_block, uint32_t start)
 {
