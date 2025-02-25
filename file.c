@@ -266,7 +266,7 @@ static int __truncate_index_block(struct super_block *sb,
 
 	/* Read index block from disk */
 	bh_index = sb_bread(sb, index_block);
-	if (!bh_index)
+	if (unlikely(!bh_index))
 		return -EIO;
 	index = (struct ouichefs_file_index_block *)bh_index->b_data;
 
@@ -285,10 +285,222 @@ static int __truncate_index_block(struct super_block *sb,
 	return 0;
 }
 
+/*
+ * Internal function to reflink files. Assumptions:
+ * - the inodes as well as file mappings are locked
+ * - dst is writeable
+ * - dst and src have the same superblock
+ *
+ * This function doesn't update the metadata of the dst inode.
+ *
+ * Returns the number of bytes that were reflinked or an negative
+ * error code.
+ */
+static ssize_t __reflink_file(struct ouichefs_inode_info *src,
+	struct ouichefs_inode_info *dst)
+{
+	struct super_block *sb = src->vfs_inode.i_sb;
+	int ret = 0;
+
+	pr_debug("Reflinking inos %lu and %lu\n",
+		src->vfs_inode.i_ino, dst->vfs_inode.i_ino);
+
+	/* Check if files are already reflinked */
+	if (src->index_block == dst->index_block)
+		goto done;
+
+	/* Get source index block */
+	ret = ouichefs_get_block(sb, src->index_block);
+	if (unlikely(ret))
+		return ret;
+
+	/* Put destination index block and point it to source */
+	ouichefs_put_block(sb, dst->index_block, true);
+	dst->index_block = src->index_block;
+
+done:
+	return i_size_read(&src->vfs_inode);
+}
+
+/*
+ * Internal function to reflink blocks between files. Assumptions:
+ * - the offsets and len are block-aligned
+ * - the inodes as well as file mappings are locked
+ * - dst is writeable and has data (at least) right up to dst_off,
+ *   if its more than this, data is overwritten
+ * - if dst == src, their ranges do not overlap
+ * - dst and src have the same superblock
+ *
+ * This function doesn't update the metadata of the dst inode if
+ * its size increased due to adding blocks.
+ *
+ * Returns the number of bytes that were reflinked or an negative
+ * error code.
+ */
+static ssize_t __reflink_file_range(
+	struct ouichefs_inode_info *src, loff_t src_off,
+	struct ouichefs_inode_info *dst, loff_t dst_off, size_t len)
+{
+	struct super_block *sb = src->vfs_inode.i_sb;
+	struct buffer_head *s_bh = NULL, *d_bh = NULL;
+	struct ouichefs_file_index_block *src_index, *dst_index;
+	bool mark_bh_dirty = false;
+	ssize_t ret = 0;
+	uint16_t s_off_b, d_off_b, len_b;
+
+	/* Compute blocks to reflink */
+	len_b = len / OUICHEFS_BLOCK_SIZE;
+	s_off_b = src_off / OUICHEFS_BLOCK_SIZE;
+	d_off_b = dst_off / OUICHEFS_BLOCK_SIZE;
+	WARN_ON(len % OUICHEFS_BLOCK_SIZE != 0);
+	WARN_ON(src_off % OUICHEFS_BLOCK_SIZE != 0);
+	WARN_ON(dst_off % OUICHEFS_BLOCK_SIZE != 0);
+
+	pr_debug("Reflinking %u blocks, src=%lu (at %u), dst=%lu (at %u)\n",
+		len_b, src->vfs_inode.i_ino, s_off_b, dst->vfs_inode.i_ino, d_off_b);
+
+	/* Open source index block */
+	s_bh = sb_bread(sb, src->index_block);
+	if (unlikely(!s_bh))
+		return -EIO;
+	src_index = (struct ouichefs_file_index_block *)s_bh->b_data;
+
+	/* Clone dst index block is necessary */
+	ret = ouichefs_cow_block(sb, &dst->index_block, true);
+	if (unlikely(ret < 0)) {
+		brelse(s_bh);
+		return ret;
+	}
+	if (ret > 0)
+		mark_inode_dirty(&dst->vfs_inode);
+
+	/* Open destination index block */
+	d_bh = sb_bread(sb, dst->index_block);
+	if (unlikely(!d_bh)) {
+		brelse(s_bh);
+		return -EIO;
+	}
+	dst_index = (struct ouichefs_file_index_block *)d_bh->b_data;
+
+	/* Actually reflink the blocks */
+	for (int i = 0; i < len_b; i++) {
+		/* Check if blocks are already reflinked */
+		if (src_index->blocks[s_off_b + i] ==
+		    dst_index->blocks[d_off_b + i]) {
+			ret += OUICHEFS_BLOCK_SIZE;
+			continue;
+		}
+
+		/* Failed to access src data block, abort early */
+		if (unlikely(
+			ouichefs_get_block(sb, src_index->blocks[s_off_b + i]) < 0
+		))
+			goto early_out;
+
+		/* Check if we overwrite a block and free it */
+		if (dst_index->blocks[d_off_b + i])
+			ouichefs_put_block(sb, dst_index->blocks[d_off_b + i], false);
+		dst_index->blocks[d_off_b + i] = src_index->blocks[s_off_b + i];
+		mark_bh_dirty = true;
+
+		ret += OUICHEFS_BLOCK_SIZE;
+	}
+
+	pr_debug("Reflinked %lu blocks (src=%lu, dst=%lu)\n",
+		ret / OUICHEFS_BLOCK_SIZE, src->vfs_inode.i_ino, dst->vfs_inode.i_ino);
+
+	/* Free index blocks */
+early_out:
+	if (mark_bh_dirty)
+		mark_buffer_dirty(d_bh);
+	brelse(d_bh);
+	brelse(s_bh);
+
+	return ret;
+}
+
+/*
+ * Deduplicates or clones 'len' bytes between files. If len is zero, process
+ * the whole source file. If REMAP_FILE_DEDUP, len mustn't be zero and the
+ * given data regions must have equal content. If REMAP_FILE_CAN_SHORTEN and if
+ * it makes sense, less than 'len' bytes may be processed to satisfy alignment.
+ */
+static loff_t ouichefs_remap_file_range(struct file *src_file, loff_t src_off,
+	struct file *dst_file, loff_t dst_off, loff_t len, unsigned int flags)
+{
+	struct inode *src_ino = src_file->f_inode;
+	struct inode *dst_ino = dst_file->f_inode;
+	loff_t ret = 0;
+
+	/* Filter for unknown flags; Abort if any are found */
+	if (flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_ADVISORY))
+		return -EINVAL;
+
+	pr_debug("Remapping %lld bytes from ino=%lu (off=%lld, size=%lld) to ino=%lu (off=%lld, size=%lld)\n",
+		len, src_ino->i_ino, src_off, i_size_read(src_ino),
+		dst_ino->i_ino, dst_off, i_size_read(dst_ino));
+
+	/* Invalidate page cache of destination file */
+	ret = invalidate_inode_pages2_range(dst_ino->i_mapping,
+		dst_off >> PAGE_SHIFT,
+		(dst_off + (len == 0 ? i_size_read(src_ino) : len)) >> PAGE_SHIFT);
+	if (ret < 0) {
+		pr_warn("Failed to invalidate inode pages: (%lld)\n", ret);
+		ret = 0;
+	}
+
+	/* Lock inodes and page cache to prevent all data modification. See
+	 * https://docs.kernel.org/filesystems/locking.html#file-operations */
+	lock_two_nondirectories(src_ino, dst_ino);
+	filemap_invalidate_lock_two(src_file->f_mapping, dst_file->f_mapping);
+
+	/* This function checks offsets for validity, syncs file content,
+	 * checks if blocks are equal and block-aligns 'len'
+	 * if necessary. Also sets len to src file size if len is 0. */
+	ret = generic_remap_file_range_prep(src_file, src_off,
+		dst_file, dst_off, &len, flags);
+	pr_debug("Update len=%lld", len);
+	if (ret < 0 || len == 0)
+		goto out_done;
+
+	/* Can the whole file be reflinked? */
+	if (src_off == 0 && dst_off == 0 &&
+		len == i_size_read(src_ino) && len > i_size_read(dst_ino)) {
+		ret = __reflink_file(OUICHEFS_INODE(src_ino), OUICHEFS_INODE(dst_ino));
+		goto out_done;
+	}
+
+	/* Reflink requested blocks */
+	ret = __reflink_file_range(OUICHEFS_INODE(src_ino), src_off,
+		OUICHEFS_INODE(dst_ino), dst_off, len);
+
+out_done:
+	/* Update dest inode metadata if operation succeeded */
+	if (ret > 0) {
+		if (dst_off + ret > i_size_read(dst_ino)) {
+			pr_debug("Update i_size %lld -> %llu\n", dst_ino->i_size, dst_off + ret);
+			i_size_write(dst_ino, dst_off + ret);
+			dst_ino->i_blocks = 1 + (dst_ino->i_size / OUICHEFS_BLOCK_SIZE);
+			if ((dst_ino->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+				dst_ino->i_blocks++;
+		}
+
+		file_update_time(dst_file);
+		mark_inode_dirty(dst_ino);
+	}
+
+	/* Unlock inodes and page cache */
+	filemap_invalidate_unlock_two(src_file->f_mapping, dst_file->f_mapping);
+	unlock_two_nondirectories(src_ino, dst_ino);
+
+	return ret;
+}
+
 const struct file_operations ouichefs_file_ops = {
 	.owner = THIS_MODULE,
 	.open = ouichefs_open,
 	.llseek = generic_file_llseek,
 	.read_iter = generic_file_read_iter,
-	.write_iter = generic_file_write_iter
+	.write_iter = generic_file_write_iter,
+	.remap_file_range = ouichefs_remap_file_range
 };
