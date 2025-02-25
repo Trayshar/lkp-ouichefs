@@ -13,7 +13,7 @@ struct ouichefs_snapshot_info {
 	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
 };
 
-void create(void);
+int create(struct super_block *sb);
 
 void delete(ouichefs_snap_id_t s_id);
 
