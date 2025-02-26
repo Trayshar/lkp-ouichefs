@@ -7,6 +7,12 @@
 #include <linux/time.h>
 #include <linux/list.h>
 #include <linux/sysfs.h>
+#include <linux/fs.h>
+#include <linux/dcache.h>
+#include <linux/namei.h>
+#include <linux/path.h>
+#include <linux/mount.h>
+#include <linux/kernel.h>
 
 #include "ouichefs.h"
 
@@ -69,6 +75,36 @@ static const struct sysfs_ops partition_sysfs_ops = {
 	.show = partition_attr_show,
 	.store = partition_attr_store,
 };
+
+struct super_block *get_superblock_from_filepath(const char *filepath)
+{
+	struct path path;
+	struct dentry *dentry;
+	struct inode *inode;
+	struct super_block *sb;
+
+    // Get a 'path' structure
+	if (kern_path(filepath, LOOKUP_FOLLOW, &path) != 0) {
+		pr_err("Failed to resolve path: %s\n", filepath);
+		return NULL;
+	}
+
+	// Get dentry and inode
+	dentry = path.dentry;
+	inode = dentry->d_inode;
+
+	if (!inode) {
+		pr_err("Failed to get inode for path: %s\n", filepath);
+		return NULL;
+	}
+
+    // Get superblock
+	sb = inode->i_sb;
+
+	path_put(&path);
+
+	return sb;
+}
 
 static int add_snapshot(struct ouichefs_partition *part)
 {

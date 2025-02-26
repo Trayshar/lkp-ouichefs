@@ -18,7 +18,6 @@
 
 static int __snapshot_create(struct super_block *sb, bool is_restore)
 {
-<<<<<<< HEAD
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_snapshot_info *s_info = NULL;
 	struct buffer_head *bh = NULL;
@@ -27,19 +26,6 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 	uint32_t ino, last_ino_block = 0;
 	ouichefs_snap_index_t new_snapshot_index;
 	int ret = 0;
-=======
-	int ret = 0;
-
-	//allocate new snapshot
-	struct ouichefs_snapshot_info *sn = kmalloc(sizeof(struct ouichefs_snapshot_info), GFP_KERNEL);
-
-	if (!sn)
-		return -ENOMEM;
-
-    //freeze fs to lock it
-	if (sb->s_op->freeze_fs) {
-		int ret = sb->s_op->freeze_fs(sb);
->>>>>>> e7e36a2 (Allocate memory for new snapshot)
 
 	// Find free index for new snapshot
 	for (ouichefs_snap_index_t j = 0; j < OUICHEFS_MAX_SNAPSHOTS; j++) {
@@ -58,15 +44,8 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 	if (!is_restore) {
 		ret = freeze_super(sb);
 		if (ret) {
-<<<<<<< HEAD
 			pr_err("file system freeze failed\n");
 			return ret;
-=======
-			pr_err("Could not %s a snapshot: file system freeze failed\n", __func__);
-			goto cleanup;
-		} else { //only for debugging
-			pr_info("File system is locked\n");
->>>>>>> e7e36a2 (Allocate memory for new snapshot)
 		}
 	} else { //only for debugging
 		pr_err("freeze_fs is not implemented\n");
@@ -158,7 +137,6 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 		ret = thaw_super(sb);
 		if (ret)
 			pr_err("File system unfreeze failed\n");
-<<<<<<< HEAD
 	}
 
 	return 0;
@@ -203,11 +181,6 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 			s_info = &sbi->snapshots[j];
 			s_index = j;
 			break;
-=======
-			goto cleanup;
-		} else { //only for debugging
-			pr_info("File system is unlocked\n");
->>>>>>> e7e36a2 (Allocate memory for new snapshot)
 		}
 	} else { //only for debugging
 		pr_err("unfreeze_fs is not implemented\n");
@@ -215,7 +188,6 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 		goto cleanup;
 	}
 
-<<<<<<< HEAD
 	// Failed to find snapshot
 	if (s_info == NULL)
 		return -ENOENT;
@@ -280,8 +252,6 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	if (ret)
 		pr_err("File system unfreeze failed\n");
 
-=======
->>>>>>> e7e36a2 (Allocate memory for new snapshot)
 	return 0;
 
 cleanup:
