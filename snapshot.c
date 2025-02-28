@@ -47,10 +47,6 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 			pr_err("file system freeze failed\n");
 			return ret;
 		}
-	} else { //only for debugging
-		pr_err("freeze_fs is not implemented\n");
-		ret = -EFAULT;
-		goto cleanup;
 	}
 
 	// Fill snapshot info
@@ -182,10 +178,6 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 			s_index = j;
 			break;
 		}
-	} else { //only for debugging
-		pr_err("unfreeze_fs is not implemented\n");
-		ret = -EFAULT;
-		goto cleanup;
 	}
 
 	// Failed to find snapshot
@@ -253,10 +245,6 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 		pr_err("File system unfreeze failed\n");
 
 	return 0;
-
-cleanup:
-	kfree(sn);
-	return ret;
 }
 
 int ouichefs_snapshot_list(struct super_block *sb)
