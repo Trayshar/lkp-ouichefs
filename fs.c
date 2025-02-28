@@ -27,7 +27,7 @@ struct dentry *ouichefs_mount(struct file_system_type *fs_type, int flags,
 		pr_err("'%s' mount failure\n", dev_name);
 	} else {
 		pr_info("'%s' mount success\n", dev_name);
-		create_ouichefs_partition_entry(dev_name);
+		create_ouichefs_partition_entry(dev_name, dentry->d_sb);
 	}
 
 	return dentry;

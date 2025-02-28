@@ -40,7 +40,7 @@ struct ouichefs_inode {
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
 struct ouichefs_snapshot_info {
-	uint64_t m_time; /* Modification time (sec) */
+	int64_t m_time; /* Modification time (sec) */
 	uint32_t root_inode; /* Address of this snapshots root inode */
 	uint8_t id; /* Unique identifier of this snapshot */
 };

@@ -19,6 +19,7 @@ struct ouichefs_partition {
 	struct list_head snapshot_list;
 	struct list_head partition_list;
 	unsigned int next_id;
+	struct super_block *sb;
 };
 
 LIST_HEAD(ouichefs_partitions);
@@ -85,6 +86,15 @@ static int add_snapshot(struct ouichefs_partition *part)
 	snap->created = ktime_get();
 
 	mutex_unlock(&part->snap_lock);
+
+	//access superblock
+	pr_info("sb root = %s\n", part->sb->s_id);
+	if (part->sb) {
+		pr_info("magic number of sb = %lu", part->sb->s_magic);
+		ouichefs_snapshot_create(part->sb);
+	} else {
+		pr_err("super block not found check why\n");
+	}
 
 	/* TODO: add implementation here*/
 	pr_info("ouichefs: Created snapshot %u in partition %s\n", snap->id, part->name);
@@ -158,12 +168,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-
-	ssize_t pos = 0;
-
-	/*TODO: add implementation here*/
-
-	return pos;
+	return ouichefs_snapshot_list(part->sb, buf);
 }
 
 static struct partition_attribute create_attr = __ATTR(create, 0220, NULL, create_store);
@@ -236,7 +241,7 @@ static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 	return 0;
 }
 
-int create_ouichefs_partition_entry(const char *dev_name)
+int create_ouichefs_partition_entry(const char *dev_name, struct super_block *sb)
 {
 	int ret;
 	struct ouichefs_partition *part;
@@ -253,7 +258,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
 	mutex_init(&part->snap_lock);
 	INIT_LIST_HEAD(&part->snapshot_list);
 	part->next_id = 1;
-
+	part->sb = sb;
 	ret = create_partition_sysfs_entry(part);
 	if (ret) {
 		kfree(part);

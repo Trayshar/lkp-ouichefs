@@ -9,6 +9,7 @@
 
 #include <linux/build_bug.h>
 #include <linux/fs.h>
+#include <linux/time64.h>
 
 // TYPE DEFINITIONS: Makes it easier to update code if we want to adjust the size of some fields
 #define ouichefs_snap_id_t uint32_t   /* Unique ID of a snapshot */
@@ -77,7 +78,7 @@ struct ouichefs_inode_info {
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
 struct ouichefs_snapshot_info {
-	uint64_t created; /* Creation time (sec) */
+	time64_t created; /* Creation time (sec) */
 	uint32_t root_inode; /* Address of this snapshots root inode */
 	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
 };
@@ -142,7 +143,13 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 	bool is_index_block);
 
 /* snapshot functions */
-int create_ouichefs_partition_entry(const char *dev_name);
+int ouichefs_snapshot_create(struct super_block *sb);
+int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id);
+int ouichefs_snapshot_list(struct super_block *sb, char *buf);
+int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id);
+
+/* sysfs interface function */
+int create_ouichefs_partition_entry(const char *dev_name, struct super_block *sb);
 void remove_ouichefs_partition_entry(const char *dev_name);
 int init_sysfs_interface(void);
 void cleanup_sysfs_interface(void);
