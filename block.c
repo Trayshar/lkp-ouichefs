@@ -31,20 +31,19 @@ int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno)
 	if (!*bno)
 		return -ENOSPC;
 
-	pr_debug("%s:%d: Allocating block %u (meta %lu)\n", __func__, __LINE__, *bno,
+	pr_debug("Allocating block %u (meta %u)\n", *bno,
 		OUICHEFS_GET_META_BLOCK(*bno, sbi));
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(*bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("%s:%d: Failed to open metadata block for data block %d\n",
-		       __func__, __LINE__, *bno);
+		pr_err("Failed to open metadata block for data block %d\n", *bno);
 		return -ENODEV;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
 
 	/* Set counter to one */
-	pr_debug("%s:%d: Refcount of %u: %u -> %u\n", __func__, __LINE__, *bno,
+	pr_debug("Refcount of %u: %u -> %u\n", *bno,
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(*bno)], 1);
 	mb->refcount[OUICHEFS_GET_META_SHIFT(*bno)] = 1;
 	mark_buffer_dirty(bh);
@@ -64,22 +63,20 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
 
 	/* Sanity check */
 	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("%s:%d: Invalid data block number: %d\n",
-			__func__, __LINE__, bno);
+		pr_warn("Invalid data block number: %d\n", bno);
 		return -EINVAL;
 	}
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("%s:%d: Failed to open metadata block for data block %d\n",
-		       __func__, __LINE__, bno);
+		pr_err("Failed to open metadata block for data block %d\n", bno);
 		return -ENODEV;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
 
 	/* Increase reference counter by one */
-	pr_debug("%s:%d: Refcount of %u: %u -> %u\n", __func__, __LINE__, bno,
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)],
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] + 1);
 	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] += 1;
@@ -112,16 +109,14 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 
 	/* Sanity check */
 	if (unlikely(*bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("%s:%d: Invalid data block number: %d\n",
-			__func__, __LINE__, *bno);
+		pr_warn("Invalid data block number: %d\n", *bno);
 		return -EINVAL;
 	}
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(*bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("%s:%d: Failed to open metadata block for data block %d\n",
-		       __func__, __LINE__, *bno);
+		pr_err("Failed to open metadata block for data block %d\n", *bno);
 		return -ENODEV;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
@@ -137,8 +132,7 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 		goto clean_bh;
 
 	/* Decrement reference counter of original data */
-	pr_debug("%s:%d: Refcount of %u: %u -> %u\n", __func__, __LINE__,
-		 original_bno,
+	pr_debug("Refcount of %u: %u -> %u\n", original_bno,
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)],
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)] - 1);
 	mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)] -= 1;
@@ -198,23 +192,22 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno)
 
 	/* Sanity check */
 	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("%s:%d: Invalid data block number: %d\n",
-			__func__, __LINE__, bno);
+		pr_warn("Invalid data block number: %d\n", bno);
 		return;
 	}
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("%s:%d: Failed to open metadata block for data block %d\n",
-		       __func__, __LINE__, bno);
+		pr_err("Failed to open metadata block for data block %d\n",
+		       bno);
 		return;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
 
 	/* Decrease reference counter by one */
 	free_data = mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] <= 1;
-	pr_debug("%s:%d: Refcount of %u: %u -> %u\n", __func__, __LINE__, bno,
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)],
 		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] - 1);
 	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] -= 1;
@@ -233,6 +226,6 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno)
 		memset(bh->b_data, 0, OUICHEFS_BLOCK_SIZE);
 		mark_buffer_dirty(bh);
 		brelse(bh);
-		pr_debug("%s:%d: Freed block %u\n", __func__, __LINE__, bno);
+		pr_debug("Freed block %u\n", bno);
 	}
 }

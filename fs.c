@@ -29,7 +29,7 @@ struct dentry *ouichefs_mount(struct file_system_type *fs_type, int flags,
 		pr_info("'%s' mount success\n", dev_name);
 
 	create_ouichefs_partition_entry(dev_name);
-	
+
 	return dentry;
 }
 
@@ -71,7 +71,7 @@ static int __init ouichefs_init(void)
 	}
 
 	ret = init_sysfs_interface();
- 	if (ret < 0)
+	if (ret < 0)
 		goto err;
 
 	pr_info("module loaded\n");

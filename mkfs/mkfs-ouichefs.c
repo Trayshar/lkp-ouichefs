@@ -34,7 +34,6 @@ struct ouichefs_inode {
 	uint32_t i_blocks; /* Block count (subdir count for directories) */
 	uint32_t i_nlink; /* Hard links count */
 	uint32_t index_block; /* Block with list of blocks for this file */
-	uint8_t snapshot_id;
 };
 
 #define OUICHEFS_INODES_PER_BLOCK \
@@ -55,17 +54,18 @@ struct ouichefs_superblock {
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of free inodes bitmask blocks */
 	uint32_t nr_bfree_blocks; /* Number of free blocks bitmask blocks */
-	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
+
+	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	uint8_t next_snapshot_id;
 	/* List of all snapshots */
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 	/* Index in snapshots array of currently used snapshot */
 	uint8_t current_snapshot_index;
-} __aligned(OUICHEFS_BLOCK_SIZE);
+} __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
 _Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
 	       "Superblock size mismatch");
 
@@ -207,7 +207,6 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 	inode->i_blocks = htole32(1);
 	inode->i_nlink = htole32(2);
 	inode->index_block = htole32(first_data_block);
-	inode->snapshot_id = 1;
 
 	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
 	if (ret != OUICHEFS_BLOCK_SIZE) {
@@ -286,7 +285,7 @@ static int write_bfree_blocks(int fd, struct ouichefs_superblock *sb)
 	uint32_t nr_used = le32toh(sb->nr_istore_blocks) +
 			   le32toh(sb->nr_ifree_blocks) +
 			   le32toh(sb->nr_bfree_blocks) +
-			   le32toh(sb->nr_meta_blocks) + 200;
+			   le32toh(sb->nr_meta_blocks) + 2;
 
 	block = malloc(OUICHEFS_BLOCK_SIZE);
 	if (!block)

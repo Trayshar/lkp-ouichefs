@@ -27,8 +27,10 @@ LIST_HEAD(ouichefs_partitions);
 
 struct partition_attribute {
 	struct attribute attr;
-	ssize_t (*show)(struct ouichefs_partition *partition, struct partition_attribute *attr, char *buf);
-	ssize_t (*store)(struct ouichefs_partition *partition, struct partition_attribute *attr, const char *buf, size_t count);
+	ssize_t (*show)(struct ouichefs_partition *partition,
+		struct partition_attribute *attr, char *buf);
+	ssize_t (*store)(struct ouichefs_partition *partition,
+		struct partition_attribute *attr, const char *buf, size_t count);
 };
 
 #define to_partition_attribute(x) container_of(x, struct partition_attribute, attr)
@@ -202,10 +204,10 @@ static const struct kobj_type ktype_default = {
 
 static struct kset *ouichefs_kset;
 
-static char *find_last_part_of_path(const char *path)
+static const char *find_last_part_of_path(const char *path)
 {
 	int n = strlen(path);
-	char *suffix = path + n;
+	const char *suffix = path + n;
 
 	while (path[--n] != '/' && 0 < n)
 		;
@@ -238,7 +240,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
 {
 	int ret;
 	struct ouichefs_partition *part;
-	char *partition_name;
+	const char *partition_name;
 
 	part = kzalloc(sizeof(*part), GFP_KERNEL);
 	if (!part) {

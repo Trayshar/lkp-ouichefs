@@ -19,9 +19,9 @@ First, build `mkfs.ouichefs` from the mkfs directory. Run `mkfs.ouichefs img` to
 This filesystem does not provide any fancy feature to ease understanding.
 
 ### Partition layout
-    +------------+-------------+-------------------+-------------------+-------------+
-    | superblock | inode store | inode free bitmap | block free bitmap | data blocks |
-    +------------+-------------+-------------------+-------------------+-------------+
+    +------------+-------------+-------------------+-------------------+----------------+-------------+
+    | superblock | inode store | inode free bitmap | block free bitmap | block metadata | data blocks |
+    +------------+-------------+-------------------+-------------------+----------------+-------------+
 Each block is 4 KiB large.
 
 ### Superblock
@@ -38,6 +38,9 @@ Contains all the inodes of the partition. The maximum number of inodes is equal 
 
 ### Inode and block free bitmaps
 These two bitmaps track if inodes/blocks are used or not.
+
+### Block Metadata
+Metadata for all data blocks is stored here, e.g. a reference counter for each data block used for Copy-On-Write
 
 ### Data blocks
 The remainder of the partition is used to store actual data on disk.

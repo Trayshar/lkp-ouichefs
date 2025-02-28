@@ -71,7 +71,6 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
 	ci->index_block = le32_to_cpu(cinode->index_block);
-	ci->snapshot_id = le32_to_cpu(cinode->snapshot_id);
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_fop = &ouichefs_dir_ops;
@@ -182,7 +181,6 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	if (ret < 0)
 		goto put_inode;
 	ci->index_block = bno;
-	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
@@ -199,8 +197,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 
 	inode->i_ctime = inode->i_atime = inode->i_mtime = current_time(inode);
-	pr_debug("%s:%d: Created inode %u (index block %u)\n", __func__,
-		 __LINE__, ino, bno);
+	pr_debug("Created inode %u (index block %u)\n", ino, bno);
 
 	return inode;
 
@@ -393,8 +390,7 @@ clean_inode:
 	/* Free inode and index block from bitmap */
 	ouichefs_put_block(sb, bno);
 	put_inode(sbi, ino);
-	pr_debug("%s:%d: Freed inode %u (index block %u)\n", __func__, __LINE__,
-		 ino, bno);
+	pr_debug("Freed inode %u (index block %u)\n", ino, bno);
 
 	return 0;
 }
