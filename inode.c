@@ -237,7 +237,6 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	if (ret < 0)
 		goto put_inode;
 	ci->index_block = bno;
-	ci->snapshot_id = OUICHEFS_INODE(dir)->snapshot_id;
 
 	/* Initialize inode */
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);

@@ -143,7 +143,6 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	disk_sb->nr_istore_blocks = sbi->nr_istore_blocks;
 	disk_sb->nr_ifree_blocks = sbi->nr_ifree_blocks;
 	disk_sb->nr_bfree_blocks = sbi->nr_bfree_blocks;
-	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
 	disk_sb->nr_free_inodes = sbi->nr_free_inodes;
 	disk_sb->nr_free_blocks = sbi->nr_free_blocks;
 	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
@@ -325,7 +324,6 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_istore_blocks = csb->nr_istore_blocks;
 	sbi->nr_ifree_blocks = csb->nr_ifree_blocks;
 	sbi->nr_bfree_blocks = csb->nr_bfree_blocks;
-	sbi->nr_meta_blocks = csb->nr_meta_blocks;
 	sbi->nr_free_inodes = csb->nr_free_inodes;
 	sbi->nr_free_blocks = csb->nr_free_blocks;
 	sbi->nr_meta_blocks = csb->nr_meta_blocks;

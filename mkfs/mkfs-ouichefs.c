@@ -61,7 +61,6 @@ struct ouichefs_superblock {
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of free inodes bitmask blocks */
 	uint32_t nr_bfree_blocks; /* Number of free blocks bitmask blocks */
-	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
@@ -73,7 +72,7 @@ struct ouichefs_superblock {
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 	/* Index in snapshots array of currently used snapshot */
 	uint8_t current_snapshot_index;
-} __aligned(OUICHEFS_BLOCK_SIZE);
+} __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
 _Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
 	       "Superblock size mismatch");
 

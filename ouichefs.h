@@ -80,7 +80,6 @@ struct ouichefs_inode {
 /* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
-	ouichefs_snap_id_t snapshot_id;
 	struct inode vfs_inode;
 };
 
@@ -102,7 +101,6 @@ struct ouichefs_sb_info {
 	uint32_t nr_istore_blocks; /* Number of inode store blocks */
 	uint32_t nr_ifree_blocks; /* Number of inode free bitmap blocks */
 	uint32_t nr_bfree_blocks; /* Number of block free bitmap blocks */
-	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
@@ -126,6 +124,10 @@ struct ouichefs_sb_info {
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 	/* Index in snapshots array of currently used snapshot */
 	ouichefs_snap_index_t current_snapshot_index;
+
+	/* THESE MUST ALWAYS BE LAST */
+	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
+	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 };
 
 struct ouichefs_metadata_block {
@@ -234,7 +236,7 @@ static_assert(OUICHEFS_MAX_FILESIZE >= (1l << 22),
 // LAYOUT HELPERS: defines some "index <> block" helpers that depend on FS layout
 /* Get inode block for inode */
 #define OUICHEFS_GET_INODE_BLOCK(ino) \
-	(1 + (ino / OUICHEFS_INODES_PER_BLOCK))
+	(1 + (ino / ((uint32_t) OUICHEFS_INODES_PER_BLOCK)))
 /* Offset inside the inode block */
 #define OUICHEFS_GET_INODE_SHIFT(ino) \
 	(ino % OUICHEFS_INODES_PER_BLOCK)
@@ -247,7 +249,7 @@ static_assert(OUICHEFS_MAX_FILESIZE >= (1l << 22),
 /* Get metadata block for data block */
 #define OUICHEFS_GET_META_BLOCK(bno, sbi) \
 	(OUICHEFS_GET_BFREE_START(sbi) + sbi->nr_bfree_blocks + \
-	((bno - OUICHEFS_GET_DATA_START(sbi)) / OUICHEFS_META_BLOCK_LEN))
+	((bno - OUICHEFS_GET_DATA_START(sbi)) / ((uint32_t) OUICHEFS_META_BLOCK_LEN)))
 /* Offset inside the metadata block */
 #define OUICHEFS_GET_META_SHIFT(bno) \
 	((bno - OUICHEFS_GET_DATA_START(sbi)) % OUICHEFS_META_BLOCK_LEN)
