@@ -20,35 +20,38 @@
  * If this function succeeds, the number of the allocated block is written into
  * bno and 0 is returned, otherwise the return value is negative.
  */
-int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno)
+int ouichefs_alloc_block(struct super_block *sb, uint32_t *out)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
 	struct ouichefs_metadata_block *mb;
+	uint32_t bno = 0;
 
 	/* Get a new, free data block */
-	*bno = get_free_block(sbi);
-	if (!*bno)
+	bno = get_free_block(sbi);
+	if (!bno)
 		return -ENOSPC;
 
-	pr_debug("Allocating block %u (meta %u)\n", *bno,
-		OUICHEFS_GET_META_BLOCK(*bno, sbi));
+	pr_debug("Allocating block %u (meta %u)\n", bno,
+		OUICHEFS_GET_META_BLOCK(bno, sbi));
 
 	/* Open corresponding metadata block */
-	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(*bno, sbi));
+	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("Failed to open metadata block for data block %d\n", *bno);
-		return -ENODEV;
+		pr_err("Failed to open metadata block for data block %d\n", bno);
+		return -EIO;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
 
 	/* Set counter to one */
-	pr_debug("Refcount of %u: %u -> %u\n", *bno,
-		 mb->refcount[OUICHEFS_GET_META_SHIFT(*bno)], 1);
-	mb->refcount[OUICHEFS_GET_META_SHIFT(*bno)] = 1;
+	pr_debug("Refcount of %u: %u -> %u\n", bno,
+		 mb->refcount[OUICHEFS_GET_META_SHIFT(bno)], 1);
+	mb->refcount[OUICHEFS_GET_META_SHIFT(bno)] = 1;
 	mark_buffer_dirty(bh);
 	brelse(bh);
 
+	/* Return new block */
+	*out = bno;
 	return 0;
 }
 
@@ -63,7 +66,7 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
 
 	/* Sanity check */
 	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("Invalid data block number: %d\n", bno);
+		pr_debug("Invalid data block number: %d\n", bno);
 		return -EINVAL;
 	}
 
@@ -71,7 +74,7 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
 	if (unlikely(!bh)) {
 		pr_err("Failed to open metadata block for data block %d\n", bno);
-		return -ENODEV;
+		return -EIO;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
 
@@ -91,9 +94,9 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
  * a pointer (bno) to an already allocated data block, this function
  * reads its reference count. If it is one, nothing is done and the
  * function returns. Otherwise, a copy of the data block is made
- * and it's block number is written into bno.
+ * and its block number is written into bno.
  * If this block is an index block (is_index_block), then the reference
- * counts of all it's referenced blocks are updated as well.
+ * count of all it's referenced blocks are updated as well.
  *
  * Return value: negative on error, 0 if nothing was done, 1 if a new
  * block has been allocated
@@ -102,105 +105,122 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 		       bool is_index_block)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct buffer_head *bh = NULL, *bh2 = NULL;
+	struct buffer_head *bh1 = NULL, *bh2 = NULL, *bh1meta = NULL;
 	struct ouichefs_metadata_block *mb;
-	uint32_t original_bno;
-	int ret = 0;
+	struct ouichefs_file_index_block *index;
+	uint32_t old_bno = *bno, new_bno;
 
 	/* Sanity check */
-	if (unlikely(*bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("Invalid data block number: %d\n", *bno);
+	if (unlikely(old_bno < OUICHEFS_GET_DATA_START(sbi))) {
+		pr_warn("Invalid data block number: %d\n", old_bno);
 		return -EINVAL;
 	}
 
 	/* Open corresponding metadata block */
-	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(*bno, sbi));
-	if (unlikely(!bh)) {
-		pr_err("Failed to open metadata block for data block %d\n", *bno);
-		return -ENODEV;
+	bh1meta = sb_bread(sb, OUICHEFS_GET_META_BLOCK(old_bno, sbi));
+	if (unlikely(!bh1meta)) {
+		pr_err("Failed to open metadata block for data block %d\n", old_bno);
+		return -EIO;
 	}
-	mb = (struct ouichefs_metadata_block *)bh->b_data;
+	mb = (struct ouichefs_metadata_block *)bh1meta->b_data;
 
 	/* Only one reference; We can modify this block; Return! */
-	if (mb->refcount[OUICHEFS_GET_META_SHIFT(*bno)] == 1)
-		goto clean_bh;
-
-	/* We are not the sole owner; Copy it! */
-	original_bno = *bno;
-	ret = ouichefs_alloc_block(sb, bno);
-	if (!ret)
-		goto clean_bh;
-
-	/* Decrement reference counter of original data */
-	pr_debug("Refcount of %u: %u -> %u\n", original_bno,
-		 mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)],
-		 mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)] - 1);
-	mb->refcount[OUICHEFS_GET_META_SHIFT(original_bno)] -= 1;
-	mark_buffer_dirty(bh);
-	brelse(bh);
-
-	/* Open blocks, copy data */
-	bh = sb_bread(sb, original_bno);
-	if (unlikely(!bh)) {
-		ret = -EIO;
-		goto clean_bh;
+	if (mb->refcount[OUICHEFS_GET_META_SHIFT(old_bno)] == 1) {
+		pr_debug("Refcount of %u is 1: No copy needed.\n", old_bno);
+		brelse(bh1meta);
+		return 0;
 	}
-	bh2 = sb_bread(sb, *bno);
+
+	/* We are not the sole owner of this data */
+	pr_debug("Refcount of %u is %u: CoWing it!\n", old_bno,
+		mb->refcount[OUICHEFS_GET_META_SHIFT(old_bno)]);
+	bh1 = sb_bread(sb, old_bno);
+	if (unlikely(!bh1)) {
+		brelse(bh1meta);
+		return -EIO;
+	}
+	lock_buffer(bh1);
+
+	/*
+	 * Decrement reference counter of original data
+	 */
+	mb->refcount[OUICHEFS_GET_META_SHIFT(old_bno)] -= 1;
+	mark_buffer_dirty(bh1meta);
+	brelse(bh1meta);
+
+	/*
+	 * Allocate new data block, set it's reference count to 1 and open it.
+	 * This is safe now since the metadata block of old_bno is no longer
+	 * locked (old_bno and new_bno might reside in the same metadata block)
+	 */
+	int ret = ouichefs_alloc_block(sb, &new_bno);
+	if (unlikely(ret < 0)) {
+		unlock_buffer(bh1);
+		brelse(bh1);
+		return ret;
+	}
+	bh2 = sb_bread(sb, new_bno);
 	if (unlikely(!bh2)) {
-		ret = -EIO;
-		goto clean_bh2;
+		pr_err("Failed to open newly-allocated data block %u!\n", new_bno);
+		ouichefs_put_block(sb, new_bno, false);
+		unlock_buffer(bh1);
+		brelse(bh1);
+		return -EIO;
 	}
-	memcpy(bh2->b_data, bh->b_data, OUICHEFS_BLOCK_SIZE);
+
+	/*
+	 * Copy data and release the new block; We may need to read the data,
+	 * so keep the old block here for now
+	 */
+	memcpy(bh2->b_data, bh1->b_data, OUICHEFS_BLOCK_SIZE);
 	mark_buffer_dirty(bh2);
+	brelse(bh2);
 
-	/* If index block, update reference counters of all referenced blocks */
+	/*
+	 * If bno is an index block, update the
+	 * reference counter of all referenced blocks
+	 */
 	if (is_index_block) {
-		brelse(bh2);
-
-		struct ouichefs_file_index_block *index =
-			(struct ouichefs_file_index_block *)bh->b_data;
-		for (int i = 0; index->blocks[i] != 0; i++) {
-			/* Skip empty blocks and ignore any errors */
+		index = (struct ouichefs_file_index_block *)bh1->b_data;
+		for (int i = 0; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
 			if (!index->blocks[i])
-				continue;
+				break;
+			/* Safety: No metadata blocks are currently locked */
 			ouichefs_get_block(sb, index->blocks[i]);
 		}
-		ret = 1;
-		goto clean_bh;
 	}
 
-clean_bh2:
-	brelse(bh2);
-clean_bh:
-	brelse(bh);
-	return ret;
+	/* Finally release the old data block and point bno to the new block */
+	unlock_buffer(bh1);
+	brelse(bh1);
+	*bno = new_bno;
+	return 1;
 }
 
 /*
  * Decrements the reference counter for the given data block. If
- * this was the last reference, the data block is freed.
- * Note that this function treats the given block as pure data.
- * If this block is an index block, the counters
- * of any referenced blocks are NOT decremented. You HAVE to do that.
+ * this was the last reference, the data block is freed. If this block
+ * is an index block, this function is called on each linked data block.
  */
-void ouichefs_put_block(struct super_block *sb, uint32_t bno)
+void ouichefs_put_block(struct super_block *sb, uint32_t bno,
+	bool is_index_block)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct buffer_head *bh = NULL;
+	struct buffer_head *bh = NULL, *bh2 = NULL;
 	struct ouichefs_metadata_block *mb;
+	struct ouichefs_file_index_block *index;
 	bool free_data = false;
 
 	/* Sanity check */
 	if (unlikely(bno < OUICHEFS_GET_DATA_START(sbi))) {
-		pr_warn("Invalid data block number: %d\n", bno);
+		pr_debug("Invalid data block number: %d\n", bno);
 		return;
 	}
 
 	/* Open corresponding metadata block */
 	bh = sb_bread(sb, OUICHEFS_GET_META_BLOCK(bno, sbi));
 	if (unlikely(!bh)) {
-		pr_err("Failed to open metadata block for data block %d\n",
-		       bno);
+		pr_err("Failed to open metadata block for data block %d\n", bno);
 		return;
 	}
 	mb = (struct ouichefs_metadata_block *)bh->b_data;
@@ -216,16 +236,26 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno)
 
 	/* This was the last reference; Free data block */
 	if (free_data) {
-		bh = NULL;
-		put_block(sbi, bno);
-		bh = sb_bread(sb, bno);
-		if (unlikely(!bh))
+		bh2 = sb_bread(sb, bno);
+		if (unlikely(!bh2))
 			return; // Failed to open data block; Consider it "free"
 
+		/* If its an index block, put linked data blocks */
+		if (is_index_block) {
+			index = (struct ouichefs_file_index_block *)bh2->b_data;
+			for (int i = 0; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
+				if (!index->blocks[i])
+					break;
+				/* Safety: No metadata blocks are currently locked */
+				ouichefs_put_block(sb, index->blocks[i], false);
+			}
+		}
+
 		/* Zero-out the block */
-		memset(bh->b_data, 0, OUICHEFS_BLOCK_SIZE);
-		mark_buffer_dirty(bh);
-		brelse(bh);
+		memset(bh2->b_data, 0, OUICHEFS_BLOCK_SIZE);
+		mark_buffer_dirty(bh2);
+		brelse(bh2);
+		put_block(sbi, bno);
 		pr_debug("Freed block %u\n", bno);
 	}
 }

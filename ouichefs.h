@@ -138,7 +138,8 @@ int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);
 int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 	bool is_index_block);
 int ouichefs_get_block(struct super_block *sb, uint32_t bno);
-void ouichefs_put_block(struct super_block *sb, uint32_t bno);
+void ouichefs_put_block(struct super_block *sb, uint32_t bno,
+	bool is_index_block);
 
 /* snapshot functions */
 int create_ouichefs_partition_entry(const char *dev_name);
