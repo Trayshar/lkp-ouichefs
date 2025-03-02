@@ -56,6 +56,7 @@ static int ouichefs_write_inode(struct inode *inode,
 				struct writeback_control *wbc)
 {
 	struct ouichefs_inode *disk_inode;
+	struct ouichefs_inode_data *disk_idata;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -73,20 +74,23 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_inode = (struct ouichefs_inode *)bh->b_data;
 	disk_inode += inode_shift;
 
+	/* Get the inode data for current snapshot */
+	disk_idata = &disk_inode->i_data[sbi->current_snapshot_index];
+
 	/* update the mode using what the generic inode has */
-	disk_inode->i_mode = inode->i_mode;
-	disk_inode->i_uid = i_uid_read(inode);
-	disk_inode->i_gid = i_gid_read(inode);
-	disk_inode->i_size = inode->i_size;
-	disk_inode->i_ctime = inode->i_ctime.tv_sec;
-	disk_inode->i_nctime = inode->i_ctime.tv_nsec;
-	disk_inode->i_atime = inode->i_atime.tv_sec;
-	disk_inode->i_natime = inode->i_atime.tv_nsec;
-	disk_inode->i_mtime = inode->i_mtime.tv_sec;
-	disk_inode->i_nmtime = inode->i_mtime.tv_nsec;
-	disk_inode->i_blocks = inode->i_blocks;
-	disk_inode->i_nlink = inode->i_nlink;
-	disk_inode->index_block = ci->index_block;
+	disk_idata->i_mode = inode->i_mode;
+	disk_idata->i_uid = i_uid_read(inode);
+	disk_idata->i_gid = i_gid_read(inode);
+	disk_idata->i_size = inode->i_size;
+	disk_idata->i_ctime = inode->i_ctime.tv_sec;
+	disk_idata->i_nctime = inode->i_ctime.tv_nsec;
+	disk_idata->i_atime = inode->i_atime.tv_sec;
+	disk_idata->i_natime = inode->i_atime.tv_nsec;
+	disk_idata->i_mtime = inode->i_mtime.tv_sec;
+	disk_idata->i_nmtime = inode->i_mtime.tv_nsec;
+	disk_idata->i_blocks = inode->i_blocks;
+	disk_idata->i_nlink = inode->i_nlink;
+	disk_idata->index_block = ci->index_block;
 
 	mark_buffer_dirty(bh);
 	sync_dirty_buffer(bh);
@@ -332,9 +336,10 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	/* Create root inode */
-	root_inode = ouichefs_iget(sb, 1);
+	root_inode = ouichefs_iget(sb, 1, false);
 	if (IS_ERR(root_inode)) {
 		ret = PTR_ERR(root_inode);
+		pr_warn("Failed to load root inode: %d\n", ret);
 		goto free_bfree;
 	}
 	inode_init_owner(&nop_mnt_idmap, root_inode, NULL, root_inode->i_mode);

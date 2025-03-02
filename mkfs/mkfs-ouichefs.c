@@ -17,11 +17,11 @@
 #define OUICHEFS_MAX_FILESIZE (1 << 22) /* 4 MiB */
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
-#define OUICHEFS_MAX_SNAPSHOTS 128
+#define OUICHEFS_MAX_SNAPSHOTS 12
 #define OUICHEFS_META_BLOCK_LEN (OUICHEFS_BLOCK_SIZE / sizeof(uint8_t))
 
-struct ouichefs_inode {
-	mode_t i_mode; /* File mode */
+struct ouichefs_inode_data {
+	uint32_t i_mode; /* File mode */
 	uint32_t i_uid; /* Owner id */
 	uint32_t i_gid; /* Group id */
 	uint32_t i_size; /* Size in bytes */
@@ -31,9 +31,16 @@ struct ouichefs_inode {
 	uint64_t i_natime; /* Access time (nsec) */
 	uint32_t i_mtime; /* Modification time (sec) */
 	uint64_t i_nmtime; /* Modification time (nsec) */
-	uint32_t i_blocks; /* Block count (subdir count for directories) */
+	uint32_t i_blocks; /* Block count */
 	uint32_t i_nlink; /* Hard links count */
-	uint32_t index_block; /* Block with list of blocks for this file */
+	uint32_t index_block; /* Index block / dir block of this inode */
+};
+
+/* Inode are saved in the 'inode store' region. They are just a mapping between
+ * snapshots and actual inode data. Eventually the actual data should live in
+ * the data block region, this is just a cursed kludge. */
+struct ouichefs_inode {
+	struct ouichefs_inode_data i_data[OUICHEFS_MAX_SNAPSHOTS];
 };
 
 #define OUICHEFS_INODES_PER_BLOCK \
@@ -147,7 +154,7 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 	// The -1 are the root inode and the dir block it points to
 	sb->nr_free_inodes = htole32(nr_inodes - 1);
 	sb->nr_free_blocks = htole32(nr_data_blocks - 1);
-	sb->current_snapshot_index = 1;
+	sb->current_snapshot_index = 0;
 	sb->next_snapshot_id = htole32(2);
 	sb->snapshots[0].m_time = htole32(0);
 	sb->snapshots[0].root_inode = htole32(1);
@@ -181,6 +188,7 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 	int ret = 0;
 	uint32_t i;
 	struct ouichefs_inode *inode;
+	struct ouichefs_inode_data *idata;
 	char *block;
 	uint32_t first_data_block;
 
@@ -196,17 +204,18 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 			   le32toh(sb->nr_ifree_blocks) +
 			   le32toh(sb->nr_meta_blocks) +
 			   le32toh(sb->nr_istore_blocks);
-	inode->i_mode =
+	idata = &inode->i_data[0];
+	idata->i_mode =
 		htole32(S_IFDIR | S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR |
 			S_IWGRP | S_IXUSR | S_IXGRP | S_IXOTH);
-	inode->i_uid = 0;
-	inode->i_gid = 0;
-	inode->i_size = htole32(OUICHEFS_BLOCK_SIZE);
-	inode->i_ctime = inode->i_atime = inode->i_mtime = htole32(0);
-	inode->i_nctime = inode->i_natime = inode->i_nmtime = htole64(0);
-	inode->i_blocks = htole32(1);
-	inode->i_nlink = htole32(2);
-	inode->index_block = htole32(first_data_block);
+	idata->i_uid = 0;
+	idata->i_gid = 0;
+	idata->i_size = htole32(OUICHEFS_BLOCK_SIZE);
+	idata->i_ctime = idata->i_atime = idata->i_mtime = htole32(0);
+	idata->i_nctime = idata->i_natime = idata->i_nmtime = htole64(0);
+	idata->i_blocks = htole32(1);
+	idata->i_nlink = htole32(2);
+	idata->index_block = htole32(first_data_block);
 
 	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
 	if (ret != OUICHEFS_BLOCK_SIZE) {

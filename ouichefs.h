@@ -30,7 +30,7 @@
 #define OUICHEFS_FILENAME_LEN 28 /* max. character length of a filename */
 #define OUICHEFS_MAX_SUBFILES 128 /* How many files a directory can hold */
 /* Maximal number of CONCURRENTLY existing snapshots */
-#define OUICHEFS_MAX_SNAPSHOTS 128
+#define OUICHEFS_MAX_SNAPSHOTS 12
 
 /*
  * ouiche_fs partition layout
@@ -52,7 +52,9 @@
  *
  */
 
-struct ouichefs_inode {
+
+/* Actual inode data */
+struct ouichefs_inode_data {
 	uint32_t i_mode; /* File mode */
 	uint32_t i_uid; /* Owner id */
 	uint32_t i_gid; /* Group id */
@@ -65,11 +67,20 @@ struct ouichefs_inode {
 	uint64_t i_nmtime; /* Modification time (nsec) */
 	uint32_t i_blocks; /* Block count */
 	uint32_t i_nlink; /* Hard links count */
-	uint32_t index_block; /* Block with list of blocks for this file */
+	uint32_t index_block; /* Index block / dir block of this inode */
 };
 
+/* Inode are saved in the 'inode store' region. They are just a mapping between
+ * snapshots and actual inode data. Eventually the actual data should live in
+ * the data block region, this is just a cursed kludge. */
+struct ouichefs_inode {
+	struct ouichefs_inode_data i_data[OUICHEFS_MAX_SNAPSHOTS];
+};
+
+/* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
+	ouichefs_snap_id_t snapshot_id;
 	struct inode vfs_inode;
 };
 
@@ -131,7 +142,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 /* inode functions */
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
-struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
+struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
 
 /* data block functions */
 int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);

@@ -20,16 +20,20 @@ static const struct inode_operations ouichefs_inode_ops;
 /*
  * Get inode ino from disk.
  */
-struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
+struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 {
 	struct inode *inode = NULL;
-	struct ouichefs_inode *cinode = NULL;
+	struct ouichefs_inode *disk_inode = NULL;
 	struct ouichefs_inode_info *ci = NULL;
+	struct ouichefs_inode_data *cinode = NULL;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
 	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
 	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 	int ret;
+
+	pr_debug("ino=%u, inode_block=%u, inode_shift=%u, snapindex=%u, create=%i\n",
+		ino, inode_block, inode_shift, sbi->current_snapshot_index, create);
 
 	/* Fail if ino is out of range */
 	if (ino >= sbi->nr_inodes)
@@ -48,10 +52,20 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	bh = sb_bread(sb, inode_block);
 	if (!bh) {
 		ret = -EIO;
+		goto failed_iget;
+	}
+	disk_inode = (struct ouichefs_inode *)bh->b_data;
+	disk_inode += inode_shift;
+
+	/* Index the disk inode at the current snapshot */
+	cinode = &disk_inode->i_data[sbi->current_snapshot_index];
+
+	/* Check if this inode still exists in the current snapshot */
+	if (cinode->index_block == 0 && !create) {
+		pr_debug("Warning: Accessed deleted ino=%u\n", ino);
+		ret = -EINVAL;
 		goto failed;
 	}
-	cinode = (struct ouichefs_inode *)bh->b_data;
-	cinode += inode_shift;
 
 	inode->i_ino = ino;
 	inode->i_sb = sb;
@@ -71,6 +85,7 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
 	ci->index_block = le32_to_cpu(cinode->index_block);
+	ci->snapshot_id = sbi->snapshots[sbi->current_snapshot_index].id;
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_fop = &ouichefs_dir_ops;
@@ -88,6 +103,8 @@ struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino)
 
 failed:
 	brelse(bh);
+
+failed_iget:
 	iget_failed(inode);
 	return ERR_PTR(ret);
 }
@@ -125,7 +142,11 @@ static struct dentry *ouichefs_lookup(struct inode *dir, struct dentry *dentry,
 			break;
 		if (!strncmp(f->filename, dentry->d_name.name,
 			     OUICHEFS_FILENAME_LEN)) {
-			inode = ouichefs_iget(sb, f->inode);
+			inode = ouichefs_iget(sb, f->inode, false);
+			if (IS_ERR(inode)) {
+				inode = NULL;
+				continue;
+			}
 			break;
 		}
 	}
@@ -169,7 +190,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	ino = get_free_inode(sbi);
 	if (!ino)
 		return ERR_PTR(-ENOSPC);
-	inode = ouichefs_iget(sb, ino);
+	inode = ouichefs_iget(sb, ino, true);
 	if (IS_ERR(inode)) {
 		ret = PTR_ERR(inode);
 		goto put_ino;
