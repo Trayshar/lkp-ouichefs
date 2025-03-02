@@ -106,7 +106,7 @@ int ouichefs_get_block(struct super_block *sb, uint32_t bno)
  * block has been allocated
  */
 int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
-		       bool is_index_block)
+		       enum ouichefs_datablock_type b_type)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh1 = NULL, *bh2 = NULL, *bh1meta = NULL;
@@ -171,7 +171,7 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 	bh2 = sb_bread(sb, new_bno);
 	if (unlikely(!bh2)) {
 		pr_err("Failed to open newly-allocated data block %u!\n", new_bno);
-		ouichefs_put_block(sb, new_bno, false);
+		ouichefs_put_block(sb, new_bno, OUICHEFS_DATA);
 		unlock_buffer(bh1);
 		brelse(bh1);
 		return -EIO;
@@ -186,11 +186,9 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 	sync_dirty_buffer(bh2);
 	brelse(bh2);
 
-	/*
-	 * If bno is an index block, update the
-	 * reference counter of all referenced blocks
-	 */
-	if (is_index_block) {
+	/* Handle block types */
+	switch (b_type) {
+	case OUICHEFS_INDEX:
 		index = (struct ouichefs_file_index_block *)bh1->b_data;
 		for (int i = 0; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
 			if (!index->blocks[i])
@@ -198,6 +196,10 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 			/* Safety: No metadata blocks are currently locked */
 			ouichefs_get_block(sb, index->blocks[i]);
 		}
+		break;
+	case OUICHEFS_DIR:
+	case OUICHEFS_DATA:
+		break;
 	}
 
 	/* Finally release the old data block and point bno to the new block */
@@ -213,7 +215,7 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
  * is an index block, this function is called on each linked data block.
  */
 void ouichefs_put_block(struct super_block *sb, uint32_t bno,
-	bool is_index_block)
+			enum ouichefs_datablock_type b_type)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL, *bh2 = NULL;
@@ -264,15 +266,21 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 		if (unlikely(!bh2))
 			return; // Failed to open data block; Consider it "free"
 
-		/* If its an index block, put linked data blocks */
-		if (is_index_block) {
+		/* Handle type-specific cleanup */
+		switch (b_type) {
+		case OUICHEFS_INDEX:
 			index = (struct ouichefs_file_index_block *)bh2->b_data;
 			for (int i = 0; i < OUICHEFS_INDEX_BLOCK_LEN; i++) {
 				if (!index->blocks[i])
 					break;
 				/* Safety: No metadata blocks are currently locked */
-				ouichefs_put_block(sb, index->blocks[i], false);
+				ouichefs_put_block(sb, index->blocks[i],
+					OUICHEFS_DATA);
 			}
+			break;
+		case OUICHEFS_DIR:
+		case OUICHEFS_DATA:
+			break;
 		}
 
 		/* Zero-out the block */

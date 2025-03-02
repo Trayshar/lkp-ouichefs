@@ -31,7 +31,7 @@
 #define OUICHEFS_FILENAME_LEN 28 /* max. character length of a filename */
 #define OUICHEFS_MAX_SUBFILES 128 /* How many files a directory can hold */
 /* Maximal number of CONCURRENTLY existing snapshots */
-#define OUICHEFS_MAX_SNAPSHOTS 128
+#define OUICHEFS_MAX_SNAPSHOTS 25
 
 /*
  * ouiche_fs partition layout
@@ -53,7 +53,9 @@
  *
  */
 
-struct ouichefs_inode {
+
+/* Actual inode data */
+struct ouichefs_inode_data {
 	uint32_t i_mode; /* File mode */
 	uint32_t i_uid; /* Owner id */
 	uint32_t i_gid; /* Group id */
@@ -66,9 +68,17 @@ struct ouichefs_inode {
 	uint64_t i_nmtime; /* Modification time (nsec) */
 	uint32_t i_blocks; /* Block count */
 	uint32_t i_nlink; /* Hard links count */
-	uint32_t index_block; /* Block with list of blocks for this file */
+	uint32_t index_block; /* Index block / dir block of this inode */
 };
 
+/* Inode are saved in the 'inode store' region. They are just a mapping between
+ * snapshots and actual inode data. Eventually the actual data should live in
+ * the data block region, this is just a cursed kludge. */
+struct ouichefs_inode {
+	struct ouichefs_inode_data i_data[OUICHEFS_MAX_SNAPSHOTS];
+};
+
+/* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
 	struct inode vfs_inode;
@@ -79,7 +89,6 @@ struct ouichefs_inode_info {
 
 struct ouichefs_snapshot_info {
 	time64_t created; /* Creation time (sec) */
-	uint32_t root_inode; /* Address of this snapshots root inode */
 	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
 };
 
@@ -98,12 +107,8 @@ struct ouichefs_sb_info {
 
 	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
-	/* Next available ID for snapshots */
-	ouichefs_snap_id_t next_snapshot_id;
-	/* List of all snapshots. TODO: Ordered by id maybe? */
+	/* List of all snapshots. */
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
-	/* Index in snapshots array of currently used snapshot */
-	ouichefs_snap_index_t current_snapshot_index;
 
 	/* THESE MUST ALWAYS BE LAST */
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
@@ -126,21 +131,30 @@ struct ouichefs_dir_block {
 	} files[OUICHEFS_MAX_SUBFILES];
 };
 
+enum ouichefs_datablock_type {
+	OUICHEFS_DATA,  /* raw file data */
+	OUICHEFS_INDEX, /* struct ouichefs_file_index_block */
+	OUICHEFS_DIR,   /* struct ouichefs_dir_block */
+};
+
 /* superblock functions */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 
 /* inode functions */
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
-struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
+struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
+int ouichefs_ifill(struct inode *inode, bool create);
+void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
+				     struct ouichefs_sb_info *sbi, uint32_t ino);
 
 /* data block functions */
 int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);
 int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
-	bool is_index_block);
+		       enum ouichefs_datablock_type b_type);
 int ouichefs_get_block(struct super_block *sb, uint32_t bno);
 void ouichefs_put_block(struct super_block *sb, uint32_t bno,
-	bool is_index_block);
+			enum ouichefs_datablock_type b_type);
 
 /* snapshot functions */
 int ouichefs_snapshot_create(struct super_block *sb);

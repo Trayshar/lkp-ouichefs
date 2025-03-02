@@ -42,7 +42,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 	 * inodes and we want to write, make a copy
 	 */
 	if (cow) {
-		ret = ouichefs_cow_block(sb, &ci->index_block, true);
+		ret = ouichefs_cow_block(sb, &ci->index_block, OUICHEFS_INDEX);
 		if (unlikely(ret < 0))
 			return ret;
 
@@ -77,7 +77,7 @@ static int ouichefs_file_get_block(struct inode *inode, sector_t iblock,
 		mark_buffer_dirty(bh_index);
 	} else if (cow) {
 		/* Check if this block is shared; Copy it if it is */
-		ret = ouichefs_cow_block(sb, &bno, false);
+		ret = ouichefs_cow_block(sb, &bno, OUICHEFS_DATA);
 		if (unlikely(ret < 0))
 			goto brelse_index;
 
@@ -222,7 +222,7 @@ static int ouichefs_open(struct inode *inode, struct file *file)
 		int ret;
 
 		/* Check if we can modify the index block, clone it otherwise */
-		ret = ouichefs_cow_block(sb, &ci->index_block, true);
+		ret = ouichefs_cow_block(sb, &ci->index_block, OUICHEFS_INDEX);
 		if (unlikely(ret < 0))
 			return ret;
 
@@ -263,7 +263,7 @@ static int ouichefs_truncate(struct ouichefs_inode_info *ci)
 		if (index->blocks[i] == 0)
 			break;
 
-		ouichefs_put_block(sb, index->blocks[i], false);
+		ouichefs_put_block(sb, index->blocks[i], OUICHEFS_DATA);
 		index->blocks[i] = 0;
 	}
 
@@ -303,7 +303,8 @@ static ssize_t __reflink_file(struct ouichefs_inode_info *src,
 		return ret;
 
 	/* Put destination index block and point it to source */
-	ouichefs_put_block(sb, dst->index_block, true);
+	ouichefs_put_block(sb, dst->index_block,
+		S_ISDIR(dst->vfs_inode.i_mode) ? OUICHEFS_DIR : OUICHEFS_INDEX);
 	dst->index_block = src->index_block;
 
 done:
@@ -354,7 +355,7 @@ static ssize_t __reflink_file_range(
 	src_index = (struct ouichefs_file_index_block *)s_bh->b_data;
 
 	/* Clone dst index block is necessary */
-	ret = ouichefs_cow_block(sb, &dst->index_block, true);
+	ret = ouichefs_cow_block(sb, &dst->index_block, OUICHEFS_INDEX);
 	if (unlikely(ret < 0)) {
 		brelse(s_bh);
 		return ret;
@@ -388,7 +389,8 @@ static ssize_t __reflink_file_range(
 
 		/* Check if we overwrite a block and free it */
 		if (dst_index->blocks[d_off_b + i])
-			ouichefs_put_block(sb, dst_index->blocks[d_off_b + i], false);
+			ouichefs_put_block(sb, dst_index->blocks[d_off_b + i],
+				   OUICHEFS_DATA);
 		dst_index->blocks[d_off_b + i] = src_index->blocks[s_off_b + i];
 		mark_bh_dirty = true;
 

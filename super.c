@@ -13,6 +13,7 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 
+#include "bitmap.h"
 #include "ouichefs.h"
 
 static struct kmem_cache *ouichefs_inode_cache;
@@ -52,10 +53,28 @@ static void ouichefs_destroy_inode(struct inode *inode)
 	kmem_cache_free(ouichefs_inode_cache, ci);
 }
 
+void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
+				     struct ouichefs_sb_info *sbi, uint32_t ino)
+{
+	/* Check if inode really is no longer used by any snapshot */
+	for (int i = 0; i < OUICHEFS_MAX_SNAPSHOTS; i++) {
+		if (inode->i_data[i].index_block != 0)
+			return;
+	}
+	put_inode(sbi, ino);
+	pr_debug("Freed inode %d!\n", ino);
+
+	/* Check for residual data (cursed) */
+	if (get_first_free_bit((void *)inode,
+			       sizeof(struct ouichefs_inode) / 8))
+		pr_debug("Warning: Found residual data in inode %d!\n", ino);
+}
+
 static int ouichefs_write_inode(struct inode *inode,
 				struct writeback_control *wbc)
 {
 	struct ouichefs_inode *disk_inode;
+	struct ouichefs_inode_data *disk_idata;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
@@ -73,20 +92,27 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_inode = (struct ouichefs_inode *)bh->b_data;
 	disk_inode += inode_shift;
 
+	/* Get the inode data for current snapshot */
+	disk_idata = &disk_inode->i_data[0];
+
 	/* update the mode using what the generic inode has */
-	disk_inode->i_mode = inode->i_mode;
-	disk_inode->i_uid = i_uid_read(inode);
-	disk_inode->i_gid = i_gid_read(inode);
-	disk_inode->i_size = i_size_read(inode);
-	disk_inode->i_ctime = inode->i_ctime.tv_sec;
-	disk_inode->i_nctime = inode->i_ctime.tv_nsec;
-	disk_inode->i_atime = inode->i_atime.tv_sec;
-	disk_inode->i_natime = inode->i_atime.tv_nsec;
-	disk_inode->i_mtime = inode->i_mtime.tv_sec;
-	disk_inode->i_nmtime = inode->i_mtime.tv_nsec;
-	disk_inode->i_blocks = inode->i_blocks;
-	disk_inode->i_nlink = inode->i_nlink;
-	disk_inode->index_block = ci->index_block;
+	disk_idata->i_mode = inode->i_mode;
+	disk_idata->i_uid = i_uid_read(inode);
+	disk_idata->i_gid = i_gid_read(inode);
+	disk_idata->i_size = i_size_read(inode);
+	disk_idata->i_ctime = inode->i_ctime.tv_sec;
+	disk_idata->i_nctime = inode->i_ctime.tv_nsec;
+	disk_idata->i_atime = inode->i_atime.tv_sec;
+	disk_idata->i_natime = inode->i_atime.tv_nsec;
+	disk_idata->i_mtime = inode->i_mtime.tv_sec;
+	disk_idata->i_nmtime = inode->i_mtime.tv_nsec;
+	disk_idata->i_blocks = inode->i_blocks;
+	disk_idata->i_nlink = inode->i_nlink;
+	disk_idata->index_block = ci->index_block;
+
+	/* If we delete this inode on disk, check if we can reclaim it */
+	if (ci->index_block == 0)
+		ouichefs_try_reclaim_disk_inode(disk_inode, sbi, ino);
 
 	mark_buffer_dirty(bh);
 	sync_dirty_buffer(bh);
@@ -115,8 +141,6 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	disk_sb->nr_free_inodes = sbi->nr_free_inodes;
 	disk_sb->nr_free_blocks = sbi->nr_free_blocks;
 	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
-	disk_sb->current_snapshot_index = sbi->current_snapshot_index;
-	disk_sb->next_snapshot_id = sbi->next_snapshot_id;
 	memcpy(disk_sb->snapshots, sbi->snapshots,
 		sizeof(disk_sb->snapshots));
 
@@ -279,8 +303,6 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_free_inodes = csb->nr_free_inodes;
 	sbi->nr_free_blocks = csb->nr_free_blocks;
 	sbi->nr_meta_blocks = csb->nr_meta_blocks;
-	sbi->current_snapshot_index = csb->current_snapshot_index;
-	sbi->next_snapshot_id = csb->next_snapshot_id;
 	memcpy(sbi->snapshots, csb->snapshots,
 		sizeof(sbi->snapshots));
 	sb->s_fs_info = sbi;
@@ -332,9 +354,10 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	/* Create root inode */
-	root_inode = ouichefs_iget(sb, 1);
+	root_inode = ouichefs_iget(sb, 1, false);
 	if (IS_ERR(root_inode)) {
 		ret = PTR_ERR(root_inode);
+		pr_warn("Failed to load root inode: %d\n", ret);
 		goto free_bfree;
 	}
 	inode_init_owner(&nop_mnt_idmap, root_inode, NULL, root_inode->i_mode);
