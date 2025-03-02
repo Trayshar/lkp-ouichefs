@@ -65,6 +65,10 @@ static int ouichefs_write_inode(struct inode *inode,
 	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
 	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 
+	if (ci->snapshot_id != OUICHEFS_GET_SNAP_ID(sbi))
+		pr_debug("Writing inode for snapshot %u (current is %u)\n",
+			ci->snapshot_id, OUICHEFS_GET_SNAP_ID(sbi));
+
 	if (ino >= sbi->nr_inodes)
 		return 0;
 

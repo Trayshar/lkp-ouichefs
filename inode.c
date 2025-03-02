@@ -11,11 +11,70 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
+#include <linux/err.h>
+#include <linux/printk.h>
 
 #include "ouichefs.h"
 #include "bitmap.h"
 
 static const struct inode_operations ouichefs_inode_ops;
+
+int ouichefs_ifill(struct super_block *sb, struct inode* inode, bool create)
+{
+	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
+	struct ouichefs_inode_data *cinode = NULL;
+	struct ouichefs_inode *disk_inode = NULL;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct buffer_head *bh = NULL;
+	int ret = 0;
+
+	/* Inode is up-to-date */
+	if (ci->snapshot_id == OUICHEFS_GET_SNAP_ID(sbi))
+		return 0;
+
+	/* Read inode from disk and initialize */
+	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(inode->i_ino));
+	if (!bh)
+		return -EIO;
+	disk_inode = (struct ouichefs_inode *)bh->b_data;
+	disk_inode += OUICHEFS_GET_INODE_SHIFT(inode->i_ino);
+
+	/* Index the disk inode at the current snapshot */
+	cinode = &disk_inode->i_data[sbi->current_snapshot_index];
+
+	/* Check if this inode still exists in the current snapshot */
+	if (cinode->index_block == 0 && !create) {
+		ret = -EINVAL;
+		goto failed;
+	}
+
+	inode->i_mode = le32_to_cpu(cinode->i_mode);
+	i_uid_write(inode, le32_to_cpu(cinode->i_uid));
+	i_gid_write(inode, le32_to_cpu(cinode->i_gid));
+	inode->i_size = le32_to_cpu(cinode->i_size);
+	inode->i_ctime.tv_sec = (time64_t)le32_to_cpu(cinode->i_ctime);
+	inode->i_ctime.tv_nsec = (long)le64_to_cpu(cinode->i_nctime);
+	inode->i_atime.tv_sec = (time64_t)le32_to_cpu(cinode->i_atime);
+	inode->i_atime.tv_nsec = (long)le64_to_cpu(cinode->i_natime);
+	inode->i_mtime.tv_sec = (time64_t)le32_to_cpu(cinode->i_mtime);
+	inode->i_mtime.tv_nsec = (long)le64_to_cpu(cinode->i_nmtime);
+	inode->i_blocks = le32_to_cpu(cinode->i_blocks);
+	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
+
+	ci->index_block = le32_to_cpu(cinode->index_block);
+	ci->snapshot_id = OUICHEFS_GET_SNAP_ID(sbi);
+
+	if (S_ISDIR(inode->i_mode)) {
+		inode->i_fop = &ouichefs_dir_ops;
+	} else if (S_ISREG(inode->i_mode)) {
+		inode->i_fop = &ouichefs_file_ops;
+		inode->i_mapping->a_ops = &ouichefs_aops;
+	}
+
+failed:
+	brelse(bh);
+	return ret;
+}
 
 /*
  * Get inode ino from disk.
@@ -23,11 +82,7 @@ static const struct inode_operations ouichefs_inode_ops;
 struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 {
 	struct inode *inode = NULL;
-	struct ouichefs_inode *disk_inode = NULL;
-	struct ouichefs_inode_info *ci = NULL;
-	struct ouichefs_inode_data *cinode = NULL;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct buffer_head *bh = NULL;
 	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
 	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 	int ret;
@@ -44,67 +99,27 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	/* If inode is in cache, return it */
-	if (!(inode->i_state & I_NEW))
+	if (!(inode->i_state & I_NEW)) {
+		/* Update inode data if current snapshot changed */
+		pr_debug("Check if inode is up to date...\n");
+		ret = ouichefs_ifill(sb, inode, false);
+		if (ret)
+			return ERR_PTR(ret);
 		return inode;
-
-	ci = OUICHEFS_INODE(inode);
-	/* Read inode from disk and initialize */
-	bh = sb_bread(sb, inode_block);
-	if (!bh) {
-		ret = -EIO;
-		goto failed_iget;
 	}
-	disk_inode = (struct ouichefs_inode *)bh->b_data;
-	disk_inode += inode_shift;
+		
 
-	/* Index the disk inode at the current snapshot */
-	cinode = &disk_inode->i_data[sbi->current_snapshot_index];
-
-	/* Check if this inode still exists in the current snapshot */
-	if (cinode->index_block == 0 && !create) {
-		pr_debug("Warning: Accessed deleted ino=%u\n", ino);
-		ret = -EINVAL;
-		goto failed;
-	}
-
+	/* Loading new inode */
 	inode->i_ino = ino;
 	inode->i_sb = sb;
 	inode->i_op = &ouichefs_inode_ops;
-
-	inode->i_mode = le32_to_cpu(cinode->i_mode);
-	i_uid_write(inode, le32_to_cpu(cinode->i_uid));
-	i_gid_write(inode, le32_to_cpu(cinode->i_gid));
-	inode->i_size = le32_to_cpu(cinode->i_size);
-	inode->i_ctime.tv_sec = (time64_t)le32_to_cpu(cinode->i_ctime);
-	inode->i_ctime.tv_nsec = (long)le64_to_cpu(cinode->i_nctime);
-	inode->i_atime.tv_sec = (time64_t)le32_to_cpu(cinode->i_atime);
-	inode->i_atime.tv_nsec = (long)le64_to_cpu(cinode->i_natime);
-	inode->i_mtime.tv_sec = (time64_t)le32_to_cpu(cinode->i_mtime);
-	inode->i_mtime.tv_nsec = (long)le64_to_cpu(cinode->i_nmtime);
-	inode->i_blocks = le32_to_cpu(cinode->i_blocks);
-	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
-
-	ci->index_block = le32_to_cpu(cinode->index_block);
-	ci->snapshot_id = sbi->snapshots[sbi->current_snapshot_index].id;
-
-	if (S_ISDIR(inode->i_mode)) {
-		inode->i_fop = &ouichefs_dir_ops;
-	} else if (S_ISREG(inode->i_mode)) {
-		inode->i_fop = &ouichefs_file_ops;
-		inode->i_mapping->a_ops = &ouichefs_aops;
+	ret = ouichefs_ifill(sb, inode, create);
+	if (!ret) {
+		/* Unlock the inode to make it usable */
+		unlock_new_inode(inode);
+		return inode;
 	}
 
-	brelse(bh);
-
-	/* Unlock the inode to make it usable */
-	unlock_new_inode(inode);
-
-	return inode;
-
-failed:
-	brelse(bh);
-
-failed_iget:
 	iget_failed(inode);
 	return ERR_PTR(ret);
 }
