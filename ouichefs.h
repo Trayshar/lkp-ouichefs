@@ -149,6 +149,8 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
+int ouichefs_ifill(struct inode* inode, bool create);
+inline bool ouichefs_inode_needs_update(struct inode* inode);
 void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
 				     struct ouichefs_sb_info *sbi, uint32_t ino);
 

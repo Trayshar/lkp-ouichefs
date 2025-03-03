@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
+/*
+ * ouiche_fs - a simple educational filesystem for Linux
+ *
+ * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
+ */
+#define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include "linux/buffer_head.h"
 #include "linux/compiler.h"
+#include "linux/pagemap.h"
 #include "linux/printk.h"
 #include "linux/stat.h"
 #include <linux/errno.h>
@@ -89,13 +96,29 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 		brelse(bh);
 	}
 
-	// Update all loaded inodes. snapshot_id is only for debugging right now
+	// Update all loaded inodes
 	if (is_restore) {
-		//FIXME: Somehow invalidate all inodes and dentries that changed
+		list_for_each_entry(i, &sb->s_inodes, i_sb_list) {
+			if(OUICHEFS_INODE(i)->snapshot_id != OUICHEFS_GET_SNAP_ID(sbi))
+				pr_debug("Found inode with s_id=%d, current is %d\n",
+					OUICHEFS_INODE(i)->snapshot_id, OUICHEFS_GET_SNAP_ID(sbi));
+
+			/* Load correct inode metadata and invalidate page cache */
+			invalidate_inode_pages2(i->i_mapping);
+			ret = ouichefs_ifill(i, false);
+			if (ret) {
+				/* Inode doesn't exist in this snapshot (or IO error) */
+				pr_err("Not implemented: Invalidate ino %lu (c=%u)\n", i->i_ino, atomic_read(&i->i_count));
+			}
+		}
 	} else {
 		list_for_each_entry(i, &sb->s_inodes, i_sb_list) {
-			if(OUICHEFS_INODE(i)->snapshot_id == OUICHEFS_GET_SNAP_ID(sbi))
+			if(OUICHEFS_INODE(i)->snapshot_id == OUICHEFS_GET_SNAP_ID(sbi)) {
 				OUICHEFS_INODE(i)->snapshot_id = s_info->id;
+			} else {
+				pr_debug("Found inode with s_id=%d, current is %d\n",
+					OUICHEFS_INODE(i)->snapshot_id, OUICHEFS_GET_SNAP_ID(sbi));
+			}
 		}
 	}
 

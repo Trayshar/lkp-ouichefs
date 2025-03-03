@@ -1,0 +1,7 @@
+#!/bin/bash
+
+rm -rf ~/mkfs
+mkdir ~/mkfs
+cp ~/share/mkfs/* ~/mkfs/
+cd ~/mkfs
+make img

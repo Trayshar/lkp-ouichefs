@@ -19,22 +19,34 @@
 
 static const struct inode_operations ouichefs_inode_ops;
 
-int ouichefs_ifill(struct super_block *sb, struct inode* inode, bool create)
+inline bool ouichefs_inode_needs_update(struct inode* inode)
 {
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(inode->i_sb);
+	return OUICHEFS_INODE(inode)->snapshot_id != OUICHEFS_GET_SNAP_ID(sbi);
+}
+
+/*
+ * Internal function that updates a given inode to the state it has on disk
+ * in the given snapshot. Return 0 on success, -EINVAL if the inode is deleted
+ * in that snapshot, and -EIO if the inode block cannot be read.
+ */
+int ouichefs_ifill(struct inode* inode, bool create)
+{
+	
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_inode_data *cinode = NULL;
 	struct ouichefs_inode *disk_inode = NULL;
+	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
 	int ret = 0;
 
-	/* Inode is up-to-date */
-	if (ci->snapshot_id == OUICHEFS_GET_SNAP_ID(sbi))
-		return 0;
+	pr_debug("Loading inode %lu from disk (snapshot %d)\n",
+		inode->i_ino, OUICHEFS_GET_SNAP_ID(sbi));
 
 	/* Read inode from disk and initialize */
 	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(inode->i_ino));
-	if (!bh)
+	if (unlikely(!bh))
 		return -EIO;
 	disk_inode = (struct ouichefs_inode *)bh->b_data;
 	disk_inode += OUICHEFS_GET_INODE_SHIFT(inode->i_ino);
@@ -101,10 +113,13 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	/* If inode is in cache, return it */
 	if (!(inode->i_state & I_NEW)) {
 		/* Update inode data if current snapshot changed */
-		pr_debug("Check if inode is up to date...\n");
-		ret = ouichefs_ifill(sb, inode, false);
-		if (ret)
-			return ERR_PTR(ret);
+		if (ouichefs_inode_needs_update(inode)) {
+			pr_debug("Updating inode from snapshot %d\n",
+				OUICHEFS_INODE(inode)->snapshot_id);
+			ret = ouichefs_ifill(inode, false);
+			if (ret)
+				return ERR_PTR(ret);
+		}
 		return inode;
 	}
 		
@@ -113,7 +128,7 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	inode->i_ino = ino;
 	inode->i_sb = sb;
 	inode->i_op = &ouichefs_inode_ops;
-	ret = ouichefs_ifill(sb, inode, create);
+	ret = ouichefs_ifill(inode, create);
 	if (!ret) {
 		/* Unlock the inode to make it usable */
 		unlock_new_inode(inode);
@@ -139,6 +154,9 @@ static struct dentry *ouichefs_lookup(struct inode *dir, struct dentry *dentry,
 	struct ouichefs_dir_block *dblock = NULL;
 	struct ouichefs_file *f = NULL;
 	int i;
+
+	pr_debug("dir=%lu (snap %d), dentry=%s\n",
+		dir->i_ino, ci_dir->snapshot_id, dentry->d_name.name);
 
 	/* Check filename length */
 	if (dentry->d_name.len > OUICHEFS_FILENAME_LEN)

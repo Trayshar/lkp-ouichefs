@@ -12,6 +12,7 @@
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
+#include <linux/dcache.h>
 
 #include "bitmap.h"
 #include "ouichefs.h"
@@ -266,6 +267,22 @@ static struct super_operations ouichefs_super_ops = {
 	.statfs = ouichefs_statfs,
 };
 
+int ouichefs_dentry_revalidate(struct dentry *dentry, unsigned int flags)
+{
+	/* Positive dentry: Check if it points to a valid inode */
+	// if (dentry->d_inode) {
+	// 	return ouichefs_inode_needs_update(dentry->d_inode);
+	// }
+	pr_debug("ino=%lu (snap %d), parent=%lu\n", dentry->d_inode ? dentry->d_inode->i_ino : 0,
+		dentry->d_inode ? OUICHEFS_INODE(dentry->d_inode)->snapshot_id : 0,
+		(dentry->d_parent && dentry->d_parent->d_inode) ? dentry->d_parent->d_inode->i_ino : 0);
+	return true;
+}
+
+static const struct dentry_operations ouichefs_dentry_ops = {
+	.d_revalidate = ouichefs_dentry_revalidate,
+};
+
 /* Fill the struct superblock from partition superblock */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 {
@@ -280,6 +297,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sb_set_blocksize(sb, OUICHEFS_BLOCK_SIZE);
 	sb->s_maxbytes = OUICHEFS_MAX_FILESIZE;
 	sb->s_op = &ouichefs_super_ops;
+	sb->s_d_op = &ouichefs_dentry_ops;
 	sb->s_time_gran = 1;
 
 	/* Read sb from disk */
