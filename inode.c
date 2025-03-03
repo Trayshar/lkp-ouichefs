@@ -40,8 +40,7 @@ int ouichefs_ifill(struct inode* inode, bool create)
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
-	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
-	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
+	int ret = 0;
 
 	pr_debug("Loading inode %lu from disk (snapshot %d)\n",
 		inode->i_ino, OUICHEFS_GET_SNAP_ID(sbi));
@@ -124,7 +123,7 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 		}
 		return inode;
 	}
-		
+
 
 	/* Loading new inode */
 	inode->i_ino = ino;

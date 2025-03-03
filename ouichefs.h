@@ -76,6 +76,7 @@ struct ouichefs_inode {
 /* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
+	ouichefs_snap_id_t snapshot_id;
 	struct inode vfs_inode;
 };
 
@@ -107,24 +108,7 @@ struct ouichefs_sb_info {
 	/* THESE MUST ALWAYS BE LAST */
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
-
-	/* Next available ID for snapshots */
-	ouichefs_snap_id_t next_snapshot_id;
-	/* List of all snapshots. TODO: Ordered by id maybe? */
-	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
-	/* Index in snapshots array of currently used snapshot */
-	ouichefs_snap_index_t current_snapshot_index;
-
-	/* THESE MUST ALWAYS BE LAST */
-	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
-	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 };
-
-struct ouichefs_metadata_block {
-	/* One reference counter for each block */
-	ouichefs_snap_index_t refcount[OUICHEFS_META_BLOCK_LEN];
-};
-
 
 struct ouichefs_metadata_block {
 	/* One reference counter for each block */
@@ -171,7 +155,7 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 /* snapshot functions */
 int ouichefs_snapshot_create(struct super_block *sb);
 int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id);
-int ouichefs_snapshot_list(struct super_block *sb);
+int ouichefs_snapshot_list(struct super_block *sb, char *buf);
 int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id);
 
 /* sysfs interface function */
@@ -199,14 +183,6 @@ struct ouichefs_snapshot {
 
 #define OUICHEFS_DEVICE_NAME_LENGTH 16
 
-struct ouichefs_partition {
-	char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
-	struct kobject kobj;
-	struct mutex snap_lock; // synchronizes snapshot list access
-	struct list_head snapshot_list;
-	struct list_head partition_list;
-	unsigned int next_id;
-};
 // Do some compile-time sanity checks
 static_assert(sizeof(struct ouichefs_metadata_block) <= OUICHEFS_BLOCK_SIZE,
 			"ouichefs_metadata_block is bigger than a block!");

@@ -175,12 +175,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-
-	ssize_t pos = 0;
-
-	/*TODO: add implementation here*/
-
-	return pos;
+	return ouichefs_snapshot_list(part->sb, buf);
 }
 
 static struct partition_attribute create_attr = __ATTR(create, 0220, NULL, create_store);
