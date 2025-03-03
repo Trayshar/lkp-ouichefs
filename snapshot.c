@@ -247,9 +247,32 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	return 0;
 }
 
-int ouichefs_snapshot_list(struct super_block *sb)
+int ouichefs_snapshot_list(struct super_block *sb, char *buf)
 {
-	return -ENOTSUPP;
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
+	struct ouichefs_snapshot_info s_info;
+	struct tm *tm;
+	ssize_t pos = 0;
+
+	tm = kmalloc(sizeof(struct tm), GFP_KERNEL);
+
+	for (int i = 0; i < OUICHEFS_MAX_SNAPSHOTS; i++) {
+		s_info = sbi->snapshots[i];
+		if (s_info.id == 0) {
+			continue;
+		} else {
+			time64_to_tm(s_info.created, 0, tm);
+			pos += scnprintf(buf + pos, PAGE_SIZE - pos,
+				"%u: %02d.%02d.%02ld %02d:%02d:%02d\n",
+				s_info.id,
+				tm->tm_mday, tm->tm_mon + 1, (tm->tm_year + 1900) % 100,
+				tm->tm_hour, tm->tm_min, tm->tm_sec);
+		}
+	}
+
+	kfree(tm);
+
+	return pos;
 }
 
 int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
