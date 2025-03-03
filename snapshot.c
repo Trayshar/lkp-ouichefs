@@ -3,13 +3,13 @@
 #include "linux/buffer_head.h"
 #include "linux/compiler.h"
 #include "linux/printk.h"
+#include "linux/stat.h"
 #include <linux/errno.h>
 #include <linux/fs.h>
 
 #include "ouichefs.h"
 
-static int __snapshot_create(struct super_block *sb,
-	bool already_locked, bool check_invalidate)
+static int __snapshot_create(struct super_block *sb, bool is_restore)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_snapshot_info *s_info = NULL;
@@ -33,8 +33,8 @@ static int __snapshot_create(struct super_block *sb,
 	if (s_info == NULL)
 		return -ENOMEM;
 
-    //freeze fs to lock it
-	if (!already_locked) {
+	//freeze fs to lock it
+	if (!is_restore) {
 		ret = freeze_super(sb);
 		if (ret) {
 			pr_err("file system freeze failed\n");
@@ -46,7 +46,7 @@ static int __snapshot_create(struct super_block *sb,
 	s_info->created = ktime_get();
 	s_info->id = sbi->next_snapshot_id;
 
-    // Copy inodes on disk only, since we do not have a full list in memory
+	// Copy inodes on disk only, since we do not have a full list in memory
 	for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
 		pr_debug("Copying ino %u\n", ino);
 		// Reuse buffer head between ino's if they are in the same block
@@ -90,22 +90,23 @@ static int __snapshot_create(struct super_block *sb,
 	}
 
 	// Update all loaded inodes. snapshot_id is only for debugging right now
-	list_for_each_entry(i, &sb->s_inodes, i_sb_list) {
-		if (check_invalidate) {
-			// FIXME: Check if inode is still valid in this snapshot.
-			// "Delete" it otherwise
+	if (is_restore) {
+		//FIXME: Somehow invalidate all inodes and dentries that changed
+	} else {
+		list_for_each_entry(i, &sb->s_inodes, i_sb_list) {
+			if(OUICHEFS_INODE(i)->snapshot_id == OUICHEFS_GET_SNAP_ID(sbi))
+				OUICHEFS_INODE(i)->snapshot_id = s_info->id;
 		}
-		OUICHEFS_INODE(i)->snapshot_id = s_info->id;
 	}
 
-    //Update snapshot metadata in superblock, making the new snapshot active
+	//Update snapshot metadata in superblock, making the new snapshot active
 	pr_info("Mounted new snapshot %u, based on %u\n", s_info->id,
 		OUICHEFS_GET_SNAP_ID(sbi));
 	sbi->next_snapshot_id++;
 	sbi->current_snapshot_index = new_snapshot_index;
 
-    //unfreeze fs to unlock it
-	if (!already_locked) {
+	//unfreeze fs to unlock it
+	if (!is_restore) {
 		ret = thaw_super(sb);
 		if (ret)
 			pr_err("File system unfreeze failed\n");
@@ -118,7 +119,7 @@ cleanup:
 	s_info->id = 0;
 
 	//unfreeze fs to unlock it
-	if (!already_locked) {
+	if (!is_restore) {
 		ret = thaw_super(sb);
 		if (ret)
 			pr_err("File system unfreeze failed\n");
@@ -129,7 +130,7 @@ cleanup:
 
 int ouichefs_snapshot_create(struct super_block *sb)
 {
-	return __snapshot_create(sb, false, false);
+	return __snapshot_create(sb, false);
 }
 
 int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
@@ -138,6 +139,7 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	struct ouichefs_snapshot_info *s_info = NULL;
 	struct buffer_head *bh = NULL;
 	struct ouichefs_inode *disk_ino;
+        struct ouichefs_inode_data *disk_ino_data;
 	uint32_t ino, last_ino_block = 0;
 	ouichefs_snap_index_t s_index;
 	int ret = 0;
@@ -159,14 +161,14 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	if (s_info == NULL)
 		return -ENOENT;
 
-    //freeze fs to lock it
+	//freeze fs to lock it
 	ret = freeze_super(sb);
 	if (ret) {
 		pr_err("file system freeze failed\n");
 		return ret;
 	}
 
-    // Clean up inodes on disk
+	// Clean up inodes on disk
 	for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
 		pr_debug("Iterating ino %u\n", ino);
 		// Reuse buffer head between ino's if they are in the same block
@@ -196,25 +198,25 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 		}
 		disk_ino = (struct ouichefs_inode *) bh->b_data;
 		disk_ino += OUICHEFS_GET_INODE_SHIFT(ino);
+		disk_ino_data = &disk_ino->i_data[s_index];
 
 		// Inode exists in requested snapshot
-		if (disk_ino->i_data[s_index].index_block != 0) {
-			//FIXME: We need a refcounter for the inode itself to put here
-			//FIXME: ouichefs_put_block cannot handle dir blocks yet
+		if (disk_ino_data->index_block != 0) {
 			ouichefs_put_block(sb,
-				disk_ino->i_data[s_index].index_block, false);
-			memset(&disk_ino->i_data[s_index], 0,
+				disk_ino_data->index_block,
+				S_ISDIR(disk_ino_data->i_mode) ? OUICHEFS_DIR : OUICHEFS_INDEX);
+			memset(disk_ino_data, 0,
 				sizeof(struct ouichefs_inode_data));
-			pr_debug("Put ino=%u\n", ino);
+			ouichefs_try_reclaim_disk_inode(disk_ino, sbi, ino);
 		}
-    }
+	}
 	if (likely(bh)) {
 		mark_buffer_dirty(bh);
 		sync_dirty_buffer(bh);
 		brelse(bh);
 	}
 
-    //unfreeze fs to unlock it
+	//unfreeze fs to unlock it
 	ret = thaw_super(sb);
 	if (ret)
 		pr_err("File system unfreeze failed\n");
@@ -251,7 +253,7 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 	if (s_info == NULL)
 		return -ENOENT;
 
-    //freeze fs to lock it
+	//freeze fs to lock it
 	ret = freeze_super(sb);
 	if (ret) {
 		pr_err("file system freeze failed\n");
@@ -262,11 +264,11 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 	// We have to copy it first to get a writeable copy. Hence, we mount the
 	// snapshot temporaily and then create a snapshot of it before unlocking.
 	sbi->current_snapshot_index = s_index;
-	ret = __snapshot_create(sb, true, true);
+	ret = __snapshot_create(sb, true);
 	if (ret)
 		return ret;
 
-    //unfreeze fs to unlock it
+	//unfreeze fs to unlock it
 	ret = thaw_super(sb);
 	if (ret)
 		pr_err("File system unfreeze failed\n");

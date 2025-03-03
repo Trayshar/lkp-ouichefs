@@ -136,6 +136,12 @@ struct ouichefs_dir_block {
 	} files[OUICHEFS_MAX_SUBFILES];
 };
 
+enum ouichefs_datablock_type {
+	OUICHEFS_DATA,  /* raw file data */
+	OUICHEFS_INDEX, /* struct ouichefs_file_index_block */
+	OUICHEFS_DIR,   /* struct ouichefs_dir_block */
+};
+
 /* superblock functions */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 
@@ -143,14 +149,16 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
+void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
+				     struct ouichefs_sb_info *sbi, uint32_t ino);
 
 /* data block functions */
 int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);
 int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
-	bool is_index_block);
+		       enum ouichefs_datablock_type b_type);
 int ouichefs_get_block(struct super_block *sb, uint32_t bno);
 void ouichefs_put_block(struct super_block *sb, uint32_t bno,
-	bool is_index_block);
+			enum ouichefs_datablock_type b_type);
 
 /* snapshot functions */
 int ouichefs_snapshot_create(struct super_block *sb);

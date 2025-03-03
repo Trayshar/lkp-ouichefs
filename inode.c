@@ -325,7 +325,11 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	return 0;
 
 iput:
-	ouichefs_put_block(sb, OUICHEFS_INODE(inode)->index_block, true);
+        /* 
+         * Since this inode was just created, we can skip the cleanup 
+         * logic in ouichefs_put_block by pretending it's just data
+         */
+	ouichefs_put_block(sb, OUICHEFS_INODE(inode)->index_block, OUICHEFS_DATA);
 	put_inode(OUICHEFS_SB(sb), inode->i_ino);
 	iput(inode);
 end:
@@ -343,12 +347,12 @@ end:
 static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 {
 	struct super_block *sb = dir->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct inode *inode = d_inode(dentry);
 	struct buffer_head *bh = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
 	uint32_t ino, bno;
 	int i, f_id = -1, nr_subs = 0;
+        bool is_dir = S_ISDIR(inode->i_mode);
 
 	ino = inode->i_ino;
 	bno = OUICHEFS_INODE(inode)->index_block;
@@ -378,7 +382,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 
 	/* Update inode stats */
 	dir->i_mtime = dir->i_atime = dir->i_ctime = current_time(dir);
-	if (S_ISDIR(inode->i_mode))
+	if (is_dir)
 		inode_dec_link_count(dir);
 	mark_inode_dirty(dir);
 
@@ -398,8 +402,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 
 	/* Free inode and index block from bitmap, as well as clean
 	 * all associated data */
-	ouichefs_put_block(sb, bno, true);
-	put_inode(sbi, ino);
+	ouichefs_put_block(sb, bno, is_dir ? OUICHEFS_DIR : OUICHEFS_INDEX);
 	pr_debug("Freed inode %u (index block %u)\n", ino, bno);
 
 	return 0;
