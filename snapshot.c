@@ -47,8 +47,8 @@ static int __snapshot_create(struct super_block *sb,
 	s_info->id = sbi->next_snapshot_id;
 
     // Copy inodes on disk only, since we do not have a full list in memory
-    for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
-        pr_debug("Copying ino %u\n", ino);
+	for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
+		pr_debug("Copying ino %u\n", ino);
 		// Reuse buffer head between ino's if they are in the same block
 		if (OUICHEFS_GET_INODE_BLOCK(ino) != last_ino_block) {
 			if (likely(bh)) {
@@ -69,7 +69,7 @@ static int __snapshot_create(struct super_block *sb,
 			}
 			last_ino_block = OUICHEFS_GET_INODE_BLOCK(ino);
 		}
-		disk_ino = (struct ouichefs_inode*) bh->b_data;
+		disk_ino = (struct ouichefs_inode *) bh->b_data;
 		disk_ino += OUICHEFS_GET_INODE_SHIFT(ino);
 
 		// Inode exists in current snapshot; Copy it
@@ -82,7 +82,7 @@ static int __snapshot_create(struct super_block *sb,
 				disk_ino->i_data[new_snapshot_index].index_block);
 			pr_debug("Copied ino=%u\n", ino);
 		}
-    }
+	}
 	if (likely(bh)) {
 		mark_buffer_dirty(bh);
 		sync_dirty_buffer(bh);
@@ -116,6 +116,14 @@ static int __snapshot_create(struct super_block *sb,
 cleanup:
 	s_info->created = 0;
 	s_info->id = 0;
+
+	//unfreeze fs to unlock it
+	if (!already_locked) {
+		ret = thaw_super(sb);
+		if (ret)
+			pr_err("File system unfreeze failed\n");
+	}
+
 	return ret;
 }
 
@@ -159,8 +167,8 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	}
 
     // Clean up inodes on disk
-    for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
-        pr_debug("Iterating ino %u\n", ino);
+	for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
+		pr_debug("Iterating ino %u\n", ino);
 		// Reuse buffer head between ino's if they are in the same block
 		if (OUICHEFS_GET_INODE_BLOCK(ino) != last_ino_block) {
 			if (likely(bh)) {
@@ -177,11 +185,16 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 				// index is used, so it's not that bad; Main issue are the
 				// data blocks that got their reference count incremented.
 				// This means we will likely lose some storage capacity
+
+				//unfreeze fs to unlock it
+				if (thaw_super(sb))
+					pr_err("File system unfreeze failed\n");
+
 				return ret;
 			}
 			last_ino_block = OUICHEFS_GET_INODE_BLOCK(ino);
 		}
-		disk_ino = (struct ouichefs_inode*) bh->b_data;
+		disk_ino = (struct ouichefs_inode *) bh->b_data;
 		disk_ino += OUICHEFS_GET_INODE_SHIFT(ino);
 
 		// Inode exists in requested snapshot
