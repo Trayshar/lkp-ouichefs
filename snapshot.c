@@ -49,8 +49,8 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 		}
 	}
 
-	// Fill snapshot info
-	s_info->created = ktime_get_real_seconds();
+	// Fill snapshot info - since current_snapshot_index is the actual snapshot set the time there
+	sbi->snapshots[sbi->current_snapshot_index].created = ktime_get_real_seconds();
 	s_info->id = sbi->next_snapshot_id;
 
 	// Copy inodes on disk only, since we do not have a full list in memory
