@@ -4,6 +4,7 @@
  *
  * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
  */
+#include "linux/compiler.h"
 #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/module.h>
@@ -273,9 +274,9 @@ put_ino:
 static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 			   struct dentry *dentry, umode_t mode, bool excl)
 {
-	struct super_block *sb;
+	struct super_block *sb = dir->i_sb;
 	struct inode *inode;
-	struct ouichefs_inode_info *ci_dir;
+	uint32_t dir_index_block = OUICHEFS_INODE(dir)->index_block;
 	struct ouichefs_dir_block *dblock;
 	char *fblock;
 	struct buffer_head *bh, *bh2;
@@ -285,12 +286,17 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	if (strlen(dentry->d_name.name) > OUICHEFS_FILENAME_LEN)
 		return -ENAMETOOLONG;
 
+	/* Check that we can modify the directory block, clone it otherwise */
+	ret = ouichefs_cow_block(sb, &dir_index_block, OUICHEFS_DIR);
+	if (unlikely(ret < 0))
+		return ret;
+
 	/* Read parent directory index */
-	ci_dir = OUICHEFS_INODE(dir);
-	sb = dir->i_sb;
-	bh = sb_bread(sb, ci_dir->index_block);
-	if (!bh)
-		return -EIO;
+	bh = sb_bread(sb, dir_index_block);
+	if (unlikely(!bh)) {
+		ret = -EIO;
+		goto end;
+	}
 	dblock = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Check if parent directory is full */
@@ -335,6 +341,7 @@ static int ouichefs_create(struct mnt_idmap *idmap, struct inode *dir,
 	dir->i_mtime = dir->i_atime = dir->i_ctime = current_time(dir);
 	if (S_ISDIR(mode))
 		inode_inc_link_count(dir);
+	OUICHEFS_INODE(dir)->index_block = dir_index_block;
 	mark_inode_dirty(dir);
 
 	/* setup dentry */
@@ -352,6 +359,8 @@ iput:
 	iput(inode);
 end:
 	brelse(bh);
+	if (dir_index_block != OUICHEFS_INODE(dir)->index_block)
+		ouichefs_put_block(sb, dir_index_block, OUICHEFS_DIR);
 	return ret;
 }
 
@@ -368,17 +377,26 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	struct inode *inode = d_inode(dentry);
 	struct buffer_head *bh = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
-	uint32_t ino, bno;
-	int i, f_id = -1, nr_subs = 0;
-        bool is_dir = S_ISDIR(inode->i_mode);
+	bool is_dir = S_ISDIR(inode->i_mode);
+	uint32_t ino = inode->i_ino;
+	uint32_t dir_index_block = OUICHEFS_INODE(dir)->index_block;
+	uint32_t bno;
+	int i, ret, f_id, nr_subs;
 
-	ino = inode->i_ino;
+	f_id = -1;
 	bno = OUICHEFS_INODE(inode)->index_block;
 
+	/* Check that we can modify the directory block, clone it otherwise */
+	ret = ouichefs_cow_block(sb, &dir_index_block, OUICHEFS_DIR);
+	if (unlikely(ret < 0))
+		return ret;
+
 	/* Read parent directory index */
-	bh = sb_bread(sb, OUICHEFS_INODE(dir)->index_block);
-	if (!bh)
-		return -EIO;
+	bh = sb_bread(sb, dir_index_block);
+	if (unlikely(!bh)) {
+		ret = -EIO;
+		goto failed;
+	}
 	dir_block = (struct ouichefs_dir_block *)bh->b_data;
 
 	/* Search for inode in parent index and get number of subfiles */
@@ -402,6 +420,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	dir->i_mtime = dir->i_atime = dir->i_ctime = current_time(dir);
 	if (is_dir)
 		inode_dec_link_count(dir);
+	OUICHEFS_INODE(dir)->index_block = dir_index_block;
 	mark_inode_dirty(dir);
 
 	/* Cleanup inode and mark dirty */
@@ -424,6 +443,11 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	pr_debug("Freed inode %u (index block %u)\n", ino, bno);
 
 	return 0;
+
+failed:
+	if (dir_index_block != OUICHEFS_INODE(dir)->index_block)
+		ouichefs_put_block(sb, dir_index_block, OUICHEFS_DIR);
+	return ret;
 }
 
 static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
@@ -437,6 +461,7 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	struct buffer_head *bh_old = NULL, *bh_new = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
 	int i, f_id = -1, new_pos = -1, ret, nr_subs, f_pos = -1;
+	uint32_t new_index_block = ci_new->index_block;
 
 	/* fail with these unsupported flags */
 	if (flags & (RENAME_EXCHANGE | RENAME_WHITEOUT))
@@ -446,8 +471,13 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	if (strlen(new_dentry->d_name.name) > OUICHEFS_FILENAME_LEN)
 		return -ENAMETOOLONG;
 
+	/* Check that we can modify the directory block, clone it otherwise */
+	ret = ouichefs_cow_block(sb, &new_index_block, OUICHEFS_DIR);
+	if (unlikely(ret < 0))
+		return ret;
+
 	/* Fail if new_dentry exists or if new_dir is full */
-	bh_new = sb_bread(sb, ci_new->index_block);
+	bh_new = sb_bread(sb, new_index_block);
 	if (!bh_new)
 		return -EIO;
 	dir_block = (struct ouichefs_dir_block *)bh_new->b_data;
@@ -495,13 +525,18 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 		current_time(new_dir);
 	if (S_ISDIR(src->i_mode))
 		inode_inc_link_count(new_dir);
+	ci_new->index_block = new_index_block;
 	mark_inode_dirty(new_dir);
 
 	/* remove target from old parent directory */
+	ret = ouichefs_cow_block(sb, &ci_old->index_block, OUICHEFS_DIR);
+	if (unlikely(ret < 0))
+		return ret;
 	bh_old = sb_bread(sb, ci_old->index_block);
 	if (!bh_old)
 		return -EIO;
 	dir_block = (struct ouichefs_dir_block *)bh_old->b_data;
+
 	/* Search for inode in old directory and number of subfiles */
 	for (i = 0; OUICHEFS_MAX_SUBFILES; i++) {
 		if (dir_block->files[i].inode == src->i_ino)
@@ -530,6 +565,7 @@ static int ouichefs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 
 relse_new:
 	brelse(bh_new);
+	ouichefs_put_block(sb, new_index_block, OUICHEFS_DIR);
 	return ret;
 }
 
