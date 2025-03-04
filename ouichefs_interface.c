@@ -15,10 +15,8 @@
 struct ouichefs_partition {
 	char name[OUICHEFS_DEVICE_NAME_LENGTH]; // device name, e.g. "sda"
 	struct kobject kobj;
-	struct mutex snap_lock; // synchronizes snapshot list access
-	struct list_head snapshot_list;
 	struct list_head partition_list;
-	unsigned int next_id;
+	struct super_block *sb;
 };
 
 LIST_HEAD(ouichefs_partitions);
@@ -74,45 +72,28 @@ static const struct sysfs_ops partition_sysfs_ops = {
 
 static int add_snapshot(struct ouichefs_partition *part)
 {
-	struct ouichefs_snapshot_info *snap;
-
-	snap = kmalloc(sizeof(*snap), GFP_KERNEL);
-	if (!snap)
-		return -ENOMEM;
-
-	mutex_lock(&part->snap_lock);
-	snap->id = part->next_id++;
-	snap->created = ktime_get();
-
-	mutex_unlock(&part->snap_lock);
-
-	/* TODO: add implementation here*/
-	pr_info("ouichefs: Created snapshot %u in partition %s\n", snap->id, part->name);
-	return 0;
+	int ret = ouichefs_snapshot_create(part->sb);
+	if (!ret)
+		pr_info("ouichefs: Created snapshot in partition %s\n", part->name);
+	return ret;
 }
 
 static int remove_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-	bool found = false;
-
-	/* TODO: add implementation here*/
-	if (found) {
+	int ret = ouichefs_snapshot_delete(part->sb, id);
+	if (!ret)
 		pr_info("ouichefs: Destroyed snapshot %u in partition %s\n", id, part->name);
-		return 0;
-	}
-	return -ENOENT;
+
+	return ret;
 }
 
 static int restore_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-	bool found = false;
+	int ret = ouichefs_snapshot_restore(part->sb, id);
+	if (!ret)
+		pr_info("ouichefs: Restored snapshot %u in partition %s\n", id, part->name);
 
-	if (!found)
-		return -ENOENT;
-
-	/* TODO: add implementation here*/
-	pr_info("ouichefs: Restored snapshot %u in partition %s\n", id, part->name);
-	return 0;
+	return ret;
 }
 
 static ssize_t create_store(struct ouichefs_partition *part, struct partition_attribute *attr,
@@ -158,12 +139,7 @@ static ssize_t restore_store(struct ouichefs_partition *part, struct partition_a
 static ssize_t list_show(struct ouichefs_partition *part, struct partition_attribute *attr,
 			   char *buf)
 {
-
-	ssize_t pos = 0;
-
-	/*TODO: add implementation here*/
-
-	return pos;
+	return ouichefs_snapshot_list(part->sb, buf);
 }
 
 static struct partition_attribute create_attr = __ATTR(create, 0220, NULL, create_store);
@@ -181,17 +157,11 @@ static struct attribute *partition_attrs[] = {
 
 ATTRIBUTE_GROUPS(partition);
 
-static void free_snapshots(struct ouichefs_partition *part)
-{
-	/* TODO: add implementation here */
-}
-
 static void partition_release(struct kobject *kobj)
 {
 	struct ouichefs_partition *part;
 
 	part = to_ouichefs_partition(kobj);
-	free_snapshots(part);
 	list_del(&part->partition_list);
 	kfree(part);
 }
@@ -236,7 +206,7 @@ static int create_partition_sysfs_entry(struct ouichefs_partition *part)
 	return 0;
 }
 
-int create_ouichefs_partition_entry(const char *dev_name)
+int create_ouichefs_partition_entry(const char *dev_name, struct super_block *sb)
 {
 	int ret;
 	struct ouichefs_partition *part;
@@ -250,10 +220,7 @@ int create_ouichefs_partition_entry(const char *dev_name)
 
 	partition_name = find_last_part_of_path(dev_name);
 	strscpy(part->name, partition_name, OUICHEFS_DEVICE_NAME_LENGTH);
-	mutex_init(&part->snap_lock);
-	INIT_LIST_HEAD(&part->snapshot_list);
-	part->next_id = 1;
-
+	part->sb = sb;
 	ret = create_partition_sysfs_entry(part);
 	if (ret) {
 		kfree(part);

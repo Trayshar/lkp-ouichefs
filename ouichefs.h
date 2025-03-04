@@ -9,6 +9,7 @@
 
 #include <linux/build_bug.h>
 #include <linux/fs.h>
+#include <linux/time64.h>
 
 // TYPE DEFINITIONS: Makes it easier to update code if we want to adjust the size of some fields
 #define ouichefs_snap_id_t uint32_t   /* Unique ID of a snapshot */
@@ -30,7 +31,7 @@
 #define OUICHEFS_FILENAME_LEN 28 /* max. character length of a filename */
 #define OUICHEFS_MAX_SUBFILES 128 /* How many files a directory can hold */
 /* Maximal number of CONCURRENTLY existing snapshots */
-#define OUICHEFS_MAX_SNAPSHOTS 128
+#define OUICHEFS_MAX_SNAPSHOTS 25
 
 /*
  * ouiche_fs partition layout
@@ -52,7 +53,9 @@
  *
  */
 
-struct ouichefs_inode {
+
+/* Actual inode data */
+struct ouichefs_inode_data {
 	uint32_t i_mode; /* File mode */
 	uint32_t i_uid; /* Owner id */
 	uint32_t i_gid; /* Group id */
@@ -65,11 +68,20 @@ struct ouichefs_inode {
 	uint64_t i_nmtime; /* Modification time (nsec) */
 	uint32_t i_blocks; /* Block count */
 	uint32_t i_nlink; /* Hard links count */
-	uint32_t index_block; /* Block with list of blocks for this file */
+	uint32_t index_block; /* Index block / dir block of this inode */
 };
 
+/* Inode are saved in the 'inode store' region. They are just a mapping between
+ * snapshots and actual inode data. Eventually the actual data should live in
+ * the data block region, this is just a cursed kludge. */
+struct ouichefs_inode {
+	struct ouichefs_inode_data i_data[OUICHEFS_MAX_SNAPSHOTS];
+};
+
+/* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
+	ouichefs_snap_id_t snapshot_id;
 	struct inode vfs_inode;
 };
 
@@ -77,8 +89,7 @@ struct ouichefs_inode_info {
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
 
 struct ouichefs_snapshot_info {
-	uint64_t created; /* Creation time (sec) */
-	uint32_t root_inode; /* Address of this snapshots root inode */
+	time64_t created; /* Creation time (sec) */
 	ouichefs_snap_id_t id; /* Unique identifier of this snapshot */
 };
 
@@ -125,24 +136,40 @@ struct ouichefs_dir_block {
 	} files[OUICHEFS_MAX_SUBFILES];
 };
 
+enum ouichefs_datablock_type {
+	OUICHEFS_DATA,  /* raw file data */
+	OUICHEFS_INDEX, /* struct ouichefs_file_index_block */
+	OUICHEFS_DIR,   /* struct ouichefs_dir_block */
+};
+
 /* superblock functions */
 int ouichefs_fill_super(struct super_block *sb, void *data, int silent);
 
 /* inode functions */
 int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
-struct inode *ouichefs_iget(struct super_block *sb, unsigned long ino);
+struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
+int ouichefs_ifill(struct inode *inode, bool create);
+inline bool ouichefs_inode_needs_update(struct inode *inode);
+void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
+				     struct ouichefs_sb_info *sbi, uint32_t ino);
 
 /* data block functions */
 int ouichefs_alloc_block(struct super_block *sb, uint32_t *bno);
 int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
-	bool is_index_block);
+		       enum ouichefs_datablock_type b_type);
 int ouichefs_get_block(struct super_block *sb, uint32_t bno);
 void ouichefs_put_block(struct super_block *sb, uint32_t bno,
-	bool is_index_block);
+			enum ouichefs_datablock_type b_type);
 
 /* snapshot functions */
-int create_ouichefs_partition_entry(const char *dev_name);
+int ouichefs_snapshot_create(struct super_block *sb);
+int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id);
+int ouichefs_snapshot_list(struct super_block *sb, char *buf);
+int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id);
+
+/* sysfs interface function */
+int create_ouichefs_partition_entry(const char *dev_name, struct super_block *sb);
 void remove_ouichefs_partition_entry(const char *dev_name);
 int init_sysfs_interface(void);
 void cleanup_sysfs_interface(void);
@@ -153,6 +180,8 @@ extern const struct file_operations ouichefs_dir_ops;
 extern const struct address_space_operations ouichefs_aops;
 
 /* Getters for superblock and inode */
+#define OUICHEFS_GET_SNAP_ID(sbi) \
+	(sbi->snapshots[sbi->current_snapshot_index].id)
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))

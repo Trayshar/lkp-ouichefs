@@ -23,12 +23,12 @@ struct dentry *ouichefs_mount(struct file_system_type *fs_type, int flags,
 
 	dentry =
 		mount_bdev(fs_type, flags, dev_name, data, ouichefs_fill_super);
-	if (IS_ERR(dentry))
+	if (IS_ERR(dentry)) {
 		pr_err("'%s' mount failure\n", dev_name);
-	else
+	} else {
 		pr_info("'%s' mount success\n", dev_name);
-
-	create_ouichefs_partition_entry(dev_name);
+		create_ouichefs_partition_entry(dev_name, dentry->d_sb);
+	}
 
 	return dentry;
 }
