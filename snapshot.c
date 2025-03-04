@@ -50,7 +50,7 @@ static int __snapshot_create(struct super_block *sb, bool is_restore)
 	}
 
 	// Fill snapshot info
-	s_info->created = ktime_get();
+	s_info->created = ktime_get_real_seconds();
 	s_info->id = sbi->next_snapshot_id;
 
 	// Copy inodes on disk only, since we do not have a full list in memory
