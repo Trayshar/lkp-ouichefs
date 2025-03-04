@@ -258,7 +258,7 @@ int ouichefs_snapshot_list(struct super_block *sb, char *buf)
 
 	for (int i = 0; i < OUICHEFS_MAX_SNAPSHOTS; i++) {
 		s_info = sbi->snapshots[i];
-		if (s_info.id == 0) {
+		if (s_info.id == 0 || i == sbi->current_snapshot_index) {
 			continue;
 		} else {
 			time64_to_tm(s_info.created, 0, tm);
