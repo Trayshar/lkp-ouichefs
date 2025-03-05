@@ -149,7 +149,7 @@ static int ouichefs_write_begin(struct file *file,
 	/* Check if the write can be completed (enough space?) */
 	if (pos + len > OUICHEFS_MAX_FILESIZE)
 		return -ENOSPC;
-	nr_allocs = max(pos + len, file->f_inode->i_size) / OUICHEFS_BLOCK_SIZE;
+	nr_allocs = max(pos + len, i_size_read(file->f_inode)) / OUICHEFS_BLOCK_SIZE;
 	if (nr_allocs > file->f_inode->i_blocks - 1)
 		nr_allocs -= file->f_inode->i_blocks - 1;
 	else
@@ -189,8 +189,8 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 	uint32_t nr_blocks_old = inode->i_blocks;
 
 	/* Update inode metadata. The 1 is the index block */
-	inode->i_blocks = 1 + (inode->i_size / OUICHEFS_BLOCK_SIZE);
-	if ((inode->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+	inode->i_blocks = 1 + (i_size_read(inode) / OUICHEFS_BLOCK_SIZE);
+	if ((i_size_read(inode) % OUICHEFS_BLOCK_SIZE) != 0)
 		inode->i_blocks++;
 	inode->i_mtime = inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
@@ -471,10 +471,12 @@ out_done:
 	/* Update dest inode metadata if operation succeeded */
 	if (ret > 0) {
 		if (dst_off + ret > i_size_read(dst_ino)) {
-			pr_debug("Update i_size %lld -> %llu\n", dst_ino->i_size, dst_off + ret);
+			pr_debug("Update i_size %lld -> %llu\n",
+				 i_size_read(dst_ino), dst_off + ret);
 			i_size_write(dst_ino, dst_off + ret);
-			dst_ino->i_blocks = 1 + (dst_ino->i_size / OUICHEFS_BLOCK_SIZE);
-			if ((dst_ino->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+			dst_ino->i_blocks = 1 +
+					    (i_size_read(dst_ino) / OUICHEFS_BLOCK_SIZE);
+			if ((i_size_read(dst_ino) % OUICHEFS_BLOCK_SIZE) != 0)
 				dst_ino->i_blocks++;
 		}
 
