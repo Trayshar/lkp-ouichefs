@@ -99,7 +99,7 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_idata->i_mode = inode->i_mode;
 	disk_idata->i_uid = i_uid_read(inode);
 	disk_idata->i_gid = i_gid_read(inode);
-	disk_idata->i_size = inode->i_size;
+	disk_idata->i_size = i_size_read(inode);
 	disk_idata->i_ctime = inode->i_ctime.tv_sec;
 	disk_idata->i_nctime = inode->i_ctime.tv_nsec;
 	disk_idata->i_atime = inode->i_atime.tv_sec;

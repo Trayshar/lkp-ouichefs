@@ -54,7 +54,7 @@ int ouichefs_ifill(struct inode *inode, bool create)
 	inode->i_mode = le32_to_cpu(cinode->i_mode);
 	i_uid_write(inode, le32_to_cpu(cinode->i_uid));
 	i_gid_write(inode, le32_to_cpu(cinode->i_gid));
-	inode->i_size = le32_to_cpu(cinode->i_size);
+	i_size_write(inode, le32_to_cpu(cinode->i_size));
 	inode->i_ctime.tv_sec = (time64_t)le32_to_cpu(cinode->i_ctime);
 	inode->i_ctime.tv_nsec = (long)le64_to_cpu(cinode->i_nctime);
 	inode->i_atime.tv_sec = (time64_t)le32_to_cpu(cinode->i_atime);
@@ -217,11 +217,11 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	inode_init_owner(&nop_mnt_idmap, inode, dir, mode);
 	inode->i_blocks = 1;
 	if (S_ISDIR(mode)) {
-		inode->i_size = OUICHEFS_BLOCK_SIZE;
+		i_size_write(inode, OUICHEFS_BLOCK_SIZE);
 		inode->i_fop = &ouichefs_dir_ops;
 		set_nlink(inode, 2); /* . and .. */
 	} else if (S_ISREG(mode)) {
-		inode->i_size = 0;
+		i_size_write(inode, 0);
 		inode->i_fop = &ouichefs_file_ops;
 		inode->i_mapping->a_ops = &ouichefs_aops;
 		set_nlink(inode, 1);
@@ -402,7 +402,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	/* Cleanup inode and mark dirty */
 	inode->i_blocks = 0;
 	OUICHEFS_INODE(inode)->index_block = 0;
-	inode->i_size = 0;
+	i_size_write(inode, 0);
 	i_uid_write(inode, 0);
 	i_gid_write(inode, 0);
 	inode->i_mode = 0;
