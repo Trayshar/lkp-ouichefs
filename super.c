@@ -83,10 +83,6 @@ static int ouichefs_write_inode(struct inode *inode,
 	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
 	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 
-	if (ci->snapshot_id != OUICHEFS_GET_SNAP_ID(sbi))
-		pr_debug("Writing inode for snapshot %u (current is %u)\n",
-			ci->snapshot_id, OUICHEFS_GET_SNAP_ID(sbi));
-
 	if (ino >= sbi->nr_inodes)
 		return 0;
 
@@ -97,7 +93,7 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_inode += inode_shift;
 
 	/* Get the inode data for current snapshot */
-	disk_idata = &disk_inode->i_data[sbi->current_snapshot_index];
+	disk_idata = &disk_inode->i_data[0];
 
 	/* update the mode using what the generic inode has */
 	disk_idata->i_mode = inode->i_mode;
@@ -145,8 +141,6 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	disk_sb->nr_free_inodes = sbi->nr_free_inodes;
 	disk_sb->nr_free_blocks = sbi->nr_free_blocks;
 	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
-	disk_sb->current_snapshot_index = sbi->current_snapshot_index;
-	disk_sb->next_snapshot_id = sbi->next_snapshot_id;
 	memcpy(disk_sb->snapshots, sbi->snapshots,
 		sizeof(disk_sb->snapshots));
 
@@ -309,8 +303,6 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->nr_free_inodes = csb->nr_free_inodes;
 	sbi->nr_free_blocks = csb->nr_free_blocks;
 	sbi->nr_meta_blocks = csb->nr_meta_blocks;
-	sbi->current_snapshot_index = csb->current_snapshot_index;
-	sbi->next_snapshot_id = csb->next_snapshot_id;
 	memcpy(sbi->snapshots, csb->snapshots,
 		sizeof(sbi->snapshots));
 	sb->s_fs_info = sbi;

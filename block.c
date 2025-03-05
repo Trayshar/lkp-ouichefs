@@ -188,8 +188,6 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 		}
 		break;
 	case OUICHEFS_DIR:
-		pr_debug("Called with type OUICHEFS_DIR!\n");
-		break;
 	case OUICHEFS_DATA:
 		break;
 	}
@@ -257,8 +255,6 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 			}
 			break;
 		case OUICHEFS_DIR:
-			pr_debug("Called with type OUICHEFS_DIR!\n");
-			break;
 		case OUICHEFS_DATA:
 			break;
 		}

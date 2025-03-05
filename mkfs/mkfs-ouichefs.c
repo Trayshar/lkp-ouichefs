@@ -66,11 +66,8 @@ struct ouichefs_superblock {
 
 	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
-	uint8_t next_snapshot_id;
 	/* List of all snapshots */
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
-	/* Index in snapshots array of currently used snapshot */
-	uint8_t current_snapshot_index;
 } __attribute__((aligned(OUICHEFS_BLOCK_SIZE)));
 _Static_assert(sizeof(struct ouichefs_superblock) == OUICHEFS_BLOCK_SIZE,
 	       "Superblock size mismatch");
@@ -153,11 +150,8 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 	// The -1 are the root inode and the dir block it points to
 	sb->nr_free_inodes = htole32(nr_inodes - 1);
 	sb->nr_free_blocks = htole32(nr_data_blocks - 1);
-	sb->current_snapshot_index = 0;
-	sb->next_snapshot_id = htole32(2);
 	sb->snapshots[0].m_time = htole32(0);
-	sb->snapshots[0].root_inode = htole32(1);
-	sb->snapshots[0].id = 1;
+	sb->snapshots[0].id = 0;
 
 	ret = write(fd, sb, sizeof(struct ouichefs_superblock));
 	if (ret != sizeof(struct ouichefs_superblock)) {

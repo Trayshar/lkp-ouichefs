@@ -81,7 +81,6 @@ struct ouichefs_inode {
 /* In-memory layout of our inodes */
 struct ouichefs_inode_info {
 	uint32_t index_block;
-	ouichefs_snap_id_t snapshot_id;
 	struct inode vfs_inode;
 };
 
@@ -108,12 +107,8 @@ struct ouichefs_sb_info {
 
 	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
-	/* Next available ID for snapshots */
-	ouichefs_snap_id_t next_snapshot_id;
-	/* List of all snapshots. TODO: Ordered by id maybe? */
+	/* List of all snapshots. */
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
-	/* Index in snapshots array of currently used snapshot */
-	ouichefs_snap_index_t current_snapshot_index;
 
 	/* THESE MUST ALWAYS BE LAST */
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
@@ -150,7 +145,6 @@ int ouichefs_init_inode_cache(void);
 void ouichefs_destroy_inode_cache(void);
 struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create);
 int ouichefs_ifill(struct inode *inode, bool create);
-inline bool ouichefs_inode_needs_update(struct inode *inode);
 void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
 				     struct ouichefs_sb_info *sbi, uint32_t ino);
 
@@ -180,8 +174,6 @@ extern const struct file_operations ouichefs_dir_ops;
 extern const struct address_space_operations ouichefs_aops;
 
 /* Getters for superblock and inode */
-#define OUICHEFS_GET_SNAP_ID(sbi) \
-	(sbi->snapshots[sbi->current_snapshot_index].id)
 #define OUICHEFS_SB(sb) (sb->s_fs_info)
 #define OUICHEFS_INODE(inode) \
 	(container_of(inode, struct ouichefs_inode_info, vfs_inode))

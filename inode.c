@@ -4,7 +4,6 @@
  *
  * Copyright (C) 2018 Redha Gouicem <redha.gouicem@lip6.fr>
  */
-#include "linux/compiler.h"
 #define pr_fmt(fmt) "%s:%s: " fmt, KBUILD_MODNAME, __func__
 
 #include <linux/module.h>
@@ -20,16 +19,10 @@
 
 static const struct inode_operations ouichefs_inode_ops;
 
-inline bool ouichefs_inode_needs_update(struct inode *inode)
-{
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(inode->i_sb);
-	return OUICHEFS_INODE(inode)->snapshot_id != OUICHEFS_GET_SNAP_ID(sbi);
-}
-
 /*
  * Internal function that updates a given inode to the state it has on disk
- * in the given snapshot. Return 0 on success, -EINVAL if the inode is deleted
- * in that snapshot, and -EIO if the inode block cannot be read.
+ * Returns 0 on success, -EINVAL if the inode is actually deleted on disk
+ * and -EIO if the inode block cannot be read.
  */
 int ouichefs_ifill(struct inode *inode, bool create)
 {
@@ -37,12 +30,10 @@ int ouichefs_ifill(struct inode *inode, bool create)
 	struct ouichefs_inode_data *cinode = NULL;
 	struct ouichefs_inode *disk_inode = NULL;
 	struct super_block *sb = inode->i_sb;
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh = NULL;
 	int ret = 0;
 
-	pr_debug("Loading inode %lu from disk (snapshot %d)\n",
-		inode->i_ino, OUICHEFS_GET_SNAP_ID(sbi));
+	pr_debug("Loading inode %lu from disk\n", inode->i_ino);
 
 	/* Read inode from disk and initialize */
 	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(inode->i_ino));
@@ -52,7 +43,7 @@ int ouichefs_ifill(struct inode *inode, bool create)
 	disk_inode += OUICHEFS_GET_INODE_SHIFT(inode->i_ino);
 
 	/* Index the disk inode at the current snapshot */
-	cinode = &disk_inode->i_data[sbi->current_snapshot_index];
+	cinode = &disk_inode->i_data[0];
 
 	/* Check if this inode still exists in the current snapshot */
 	if (cinode->index_block == 0 && !create) {
@@ -74,7 +65,6 @@ int ouichefs_ifill(struct inode *inode, bool create)
 	set_nlink(inode, le32_to_cpu(cinode->i_nlink));
 
 	ci->index_block = le32_to_cpu(cinode->index_block);
-	ci->snapshot_id = OUICHEFS_GET_SNAP_ID(sbi);
 
 	if (S_ISDIR(inode->i_mode)) {
 		inode->i_fop = &ouichefs_dir_ops;
@@ -99,8 +89,8 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 	int ret;
 
-	pr_debug("ino=%u, inode_block=%u, inode_shift=%u, snapindex=%u, create=%i\n",
-		ino, inode_block, inode_shift, sbi->current_snapshot_index, create);
+	pr_debug("ino=%u, inode_block=%u, inode_shift=%u, create=%i\n",
+		ino, inode_block, inode_shift, create);
 
 	/* Fail if ino is out of range */
 	if (ino >= sbi->nr_inodes)
@@ -111,17 +101,8 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	/* If inode is in cache, return it */
-	if (!(inode->i_state & I_NEW)) {
-		/* Update inode data if current snapshot changed */
-		if (ouichefs_inode_needs_update(inode)) {
-			pr_debug("Updating inode from snapshot %d\n",
-				OUICHEFS_INODE(inode)->snapshot_id);
-			ret = ouichefs_ifill(inode, false);
-			if (ret)
-				return ERR_PTR(ret);
-		}
+	if (!(inode->i_state & I_NEW))
 		return inode;
-	}
 
 	/* Loading new inode */
 	inode->i_ino = ino;
@@ -153,9 +134,6 @@ static struct dentry *ouichefs_lookup(struct inode *dir, struct dentry *dentry,
 	struct ouichefs_dir_block *dblock = NULL;
 	struct ouichefs_file *f = NULL;
 	int i;
-
-	pr_debug("dir=%lu (snap %d), dentry=%s\n",
-		dir->i_ino, ci_dir->snapshot_id, dentry->d_name.name);
 
 	/* Check filename length */
 	if (dentry->d_name.len > OUICHEFS_FILENAME_LEN)
