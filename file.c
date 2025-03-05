@@ -146,7 +146,7 @@ static int ouichefs_write_begin(struct file *file,
 	/* Check if the write can be completed (enough space?) */
 	if (pos + len > OUICHEFS_MAX_FILESIZE)
 		return -ENOSPC;
-	nr_allocs = max(pos + len, file->f_inode->i_size) / OUICHEFS_BLOCK_SIZE;
+	nr_allocs = max(pos + len, i_size_read(file->f_inode)) / OUICHEFS_BLOCK_SIZE;
 	if (nr_allocs > file->f_inode->i_blocks - 1)
 		nr_allocs -= file->f_inode->i_blocks - 1;
 	else
@@ -189,8 +189,8 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 	uint32_t nr_blocks_old = inode->i_blocks;
 
 	/* Update inode metadata. The 1 is the index block */
-	inode->i_blocks = 1 + (inode->i_size / OUICHEFS_BLOCK_SIZE);
-	if ((inode->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+	inode->i_blocks = 1 + (i_size_read(inode) / OUICHEFS_BLOCK_SIZE);
+	if ((i_size_read(inode) % OUICHEFS_BLOCK_SIZE) != 0)
 		inode->i_blocks++;
 	inode->i_mtime = inode->i_ctime = current_time(inode);
 	mark_inode_dirty(inode);
@@ -198,7 +198,7 @@ static int ouichefs_write_end(struct file *file, struct address_space *mapping,
 	/* If file is smaller than before, free unused blocks */
 	if (nr_blocks_old > inode->i_blocks) {
 		/* Free unused blocks from page cache */
-		truncate_pagecache(inode, inode->i_size);
+		truncate_pagecache(inode, i_size_read(inode));
 
 		/* delete unused blocks. Note that we already CoW'ed the index block
 		 * in write_begin, so this should be safe */
