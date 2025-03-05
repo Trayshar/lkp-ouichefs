@@ -480,10 +480,10 @@ out_done:
 	/* Update dest inode metadata if operation succeeded */
 	if (ret > 0) {
 		if (dst_off + ret > i_size_read(dst_ino)) {
-			pr_debug("Update i_size %lld -> %llu\n", dst_ino->i_size, dst_off + ret);
+			pr_debug("Update i_size %lld -> %llu\n", i_size_read(dst_ino), dst_off + ret);
 			i_size_write(dst_ino, dst_off + ret);
-			dst_ino->i_blocks = 1 + (dst_ino->i_size / OUICHEFS_BLOCK_SIZE);
-			if ((dst_ino->i_size % OUICHEFS_BLOCK_SIZE) != 0)
+			dst_ino->i_blocks = 1 + (i_size_read(dst_ino) / OUICHEFS_BLOCK_SIZE);
+			if ((i_size_read(dst_ino) % OUICHEFS_BLOCK_SIZE) != 0)
 				dst_ino->i_blocks++;
 		}
 
