@@ -66,6 +66,23 @@ static inline uint32_t get_free_block(struct ouichefs_sb_info *sbi)
 }
 
 /*
+ * Return an unused inode data entry number and mark it used.
+ * Return 0 if no free entry was found.
+ */
+static inline uint32_t get_free_id_entry(struct ouichefs_sb_info *sbi)
+{
+	uint32_t ret;
+
+	ret = get_first_free_bit(sbi->idfree_bitmap, sbi->nr_inode_data_entries);
+	if (ret) {
+		sbi->nr_free_inode_data_entries--;
+		pr_debug("%s:%d: allocated inode data entry %u\n", __func__, __LINE__,
+			ret);
+	}
+	return ret;
+}
+
+/*
  * Mark the i-th bit in freemap as free (i.e. 1)
  */
 static inline int put_free_bit(unsigned long *freemap, unsigned long size,
@@ -102,6 +119,18 @@ static inline void put_block(struct ouichefs_sb_info *sbi, uint32_t bno)
 
 	sbi->nr_free_blocks++;
 	pr_debug("%s:%d: freed block %u\n", __func__, __LINE__, bno);
+}
+
+/*
+ * Mark an inode data entry as unused.
+ */
+static inline void put_inode_data_entry(struct ouichefs_sb_info *sbi, uint32_t idx)
+{
+	if (put_free_bit(sbi->idfree_bitmap, sbi->nr_inode_data_entries, idx))
+		return;
+
+	sbi->nr_free_blocks++;
+	pr_debug("%s:%d: freed inode data entry %u\n", __func__, __LINE__, idx);
 }
 
 #endif /* _OUICHEFS_BITMAP_H */

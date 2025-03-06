@@ -198,6 +198,7 @@ int ouichefs_cow_block(struct super_block *sb, uint32_t *bno,
 		}
 		break;
 	case OUICHEFS_DIR:
+	case OUICHEFS_INODE_DATA:
 	case OUICHEFS_DATA:
 		break;
 	}
@@ -279,6 +280,7 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 			}
 			break;
 		case OUICHEFS_DIR:
+		case OUICHEFS_INODE_DATA:
 		case OUICHEFS_DATA:
 			break;
 		}

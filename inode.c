@@ -20,7 +20,7 @@
 static const struct inode_operations ouichefs_inode_ops;
 
 /*
- * Internal function that updates a given inode to the state it has on disk
+ * Updates a given inode to the state it has on disk.
  * Returns 0 on success, -EINVAL if the inode is actually deleted on disk
  * and -EIO if the inode block cannot be read.
  */
@@ -28,28 +28,15 @@ int ouichefs_ifill(struct inode *inode, bool create)
 {
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct ouichefs_inode_data *cinode = NULL;
-	struct ouichefs_inode *disk_inode = NULL;
 	struct super_block *sb = inode->i_sb;
 	struct buffer_head *bh = NULL;
 	int ret = 0;
 
 	pr_debug("Loading inode %lu from disk\n", inode->i_ino);
 
-	/* Read inode from disk and initialize */
-	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(inode->i_ino));
-	if (unlikely(!bh))
-		return -EIO;
-	disk_inode = (struct ouichefs_inode *)bh->b_data;
-	disk_inode += OUICHEFS_GET_INODE_SHIFT(inode->i_ino);
-
-	/* Index the disk inode at the current snapshot */
-	cinode = &disk_inode->i_data[0];
-
-	/* Check if this inode still exists in the current snapshot */
-	if (cinode->index_block == 0 && !create) {
-		ret = -EINVAL;
-		goto failed;
-	}
+	cinode = ouichefs_get_inode_data(sb, &bh, inode->i_ino, create, false);
+	if (IS_ERR(cinode))
+		return PTR_ERR(cinode);
 
 	inode->i_mode = le32_to_cpu(cinode->i_mode);
 	i_uid_write(inode, le32_to_cpu(cinode->i_uid));
@@ -73,7 +60,6 @@ int ouichefs_ifill(struct inode *inode, bool create)
 		inode->i_mapping->a_ops = &ouichefs_aops;
 	}
 
-failed:
 	brelse(bh);
 	return ret;
 }
@@ -109,14 +95,14 @@ struct inode *ouichefs_iget(struct super_block *sb, uint32_t ino, bool create)
 	inode->i_sb = sb;
 	inode->i_op = &ouichefs_inode_ops;
 	ret = ouichefs_ifill(inode, create);
-	if (!ret) {
-		/* Unlock the inode to make it usable */
-		unlock_new_inode(inode);
-		return inode;
+	if (unlikely(ret)) {
+		iget_failed(inode);
+		return ERR_PTR(ret);
 	}
 
-	iget_failed(inode);
-	return ERR_PTR(ret);
+	/* Unlock the inode to make it usable */
+	unlock_new_inode(inode);
+	return inode;
 }
 
 /*
@@ -179,8 +165,8 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 {
 	struct inode *inode;
 	struct ouichefs_inode_info *ci;
-	struct super_block *sb;
-	struct ouichefs_sb_info *sbi;
+	struct super_block *sb = dir->i_sb;
+	struct ouichefs_sb_info *sbi =  OUICHEFS_SB(sb);
 	uint32_t ino, bno;
 	int ret;
 
@@ -191,9 +177,9 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	}
 
 	/* Check if inodes are available */
-	sb = dir->i_sb;
-	sbi = OUICHEFS_SB(sb);
-	if (sbi->nr_free_inodes == 0 || sbi->nr_free_blocks == 0)
+	if (sbi->nr_free_inodes == 0 ||
+	    sbi->nr_free_blocks == 0 ||
+	    sbi->nr_free_inode_data_entries == 0)
 		return ERR_PTR(-ENOSPC);
 
 	/* Get a new free inode */
@@ -210,7 +196,7 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 	/* Get a free block for this new inode's index */
 	ret = ouichefs_alloc_block(sb, &bno);
 	if (ret < 0)
-		goto put_inode;
+		goto put_inode_data;
 	ci->index_block = bno;
 
 	/* Initialize inode */
@@ -232,6 +218,19 @@ static struct inode *ouichefs_new_inode(struct inode *dir, mode_t mode)
 
 	return inode;
 
+	/* Error handling */
+	struct buffer_head *bh;
+	struct ouichefs_inode *oi;
+put_inode_data:
+	/* Open inode on disk to clean up allocated inode data */
+	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(ino));
+	if (unlikely(!bh))
+		goto put_inode;
+	oi = (struct ouichefs_inode *)bh->b_data;
+	oi += OUICHEFS_GET_INODE_SHIFT(ino);
+	ouichefs_put_inode_data(sb, ino, oi, 0);
+	mark_buffer_dirty(bh);
+	brelse(bh);
 put_inode:
 	iput(inode);
 put_ino:
@@ -352,6 +351,7 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	struct super_block *sb = dir->i_sb;
 	struct inode *inode = d_inode(dentry);
 	struct buffer_head *bh = NULL;
+	struct ouichefs_inode *disk_inode = NULL;
 	struct ouichefs_dir_block *dir_block = NULL;
 	bool is_dir = S_ISDIR(inode->i_mode);
 	uint32_t ino = inode->i_ino;
@@ -413,13 +413,22 @@ static int ouichefs_unlink(struct inode *dir, struct dentry *dentry)
 	inode_dec_link_count(inode);
 	mark_inode_dirty(inode);
 
-	/*
-	 * Put the given index block. The inode data will be put in
-	 * ouichefs_write_inode(). If after that the inode does not
-	 * hold any data, it is freed there as well.
-	 */
+	/* Put the inodes index block */
 	ouichefs_put_block(sb, bno, is_dir ? OUICHEFS_DIR : OUICHEFS_INDEX);
-	pr_debug("Deleted inode %u (index block %u)\n", ino, bno);
+
+	/* Opening inode on disk to delete it */
+	bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(ino));
+	if (unlikely(!bh))
+		return -EIO;
+	disk_inode = (struct ouichefs_inode *)bh->b_data;
+	disk_inode += OUICHEFS_GET_INODE_SHIFT(ino);
+
+	/* Perform data cleanup */
+	pr_debug("Putting inode %u (idx %u, index block %u)\n", ino, disk_inode->i_data[0], bno);
+	ouichefs_put_inode_data(sb, ino, disk_inode, 0);
+	mark_buffer_dirty(bh);
+	sync_dirty_buffer(bh);
+	brelse(bh);
 
 	return 0;
 

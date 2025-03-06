@@ -23,25 +23,24 @@ static int copy_all_disk_inodes(struct super_block *sb,
 	struct buffer_head *bh = NULL;
 	struct ouichefs_inode *disk_ino;
 	uint32_t ino, last_ino_block = 0;
+	bool dirty = false;
 
-	// Copy inodes on disk only, since we do not have a full list in memory
+	/* Copy inodes on disk only, since we do not have a full list in memory */
 	for_each_clear_bit(ino, sbi->ifree_bitmap, sbi->nr_inodes) {
 		pr_debug("Copying ino %u\n", ino);
-		// Reuse buffer head between ino's if they are in the same block
+		/* Reuse buffer head between ino's if they are in the same block */
 		if (OUICHEFS_GET_INODE_BLOCK(ino) != last_ino_block) {
 			if (likely(bh)) {
-				mark_buffer_dirty(bh);
-				sync_dirty_buffer(bh);
+				if (dirty) {
+					mark_buffer_dirty(bh);
+					sync_dirty_buffer(bh);
+					dirty = false;
+				}
 				brelse(bh);
 			}
 			bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(ino));
 			if (unlikely(!bh)) {
 				pr_err("Failed to read inode %u while making a snapshot\n", ino);
-				// We may have successfully copied some inodes already, but
-				// they will get overwritten the next time this snapshot
-				// index is used, so it's not that bad; Main issue are the
-				// data blocks that got their reference count incremented.
-				// This means we will likely lose some storage capacity
 				return -EIO;
 			}
 			last_ino_block = OUICHEFS_GET_INODE_BLOCK(ino);
@@ -50,19 +49,19 @@ static int copy_all_disk_inodes(struct super_block *sb,
 		disk_ino += OUICHEFS_GET_INODE_SHIFT(ino);
 
 		// Inode exists in current snapshot; Copy it
-		if (disk_ino->i_data[from_index].index_block != 0) {
-			memcpy(
-				&disk_ino->i_data[to_index],
-				&disk_ino->i_data[from_index],
-				sizeof(struct ouichefs_inode_data));
-			ouichefs_get_block(sb,
-				disk_ino->i_data[from_index].index_block);
+		if (disk_ino->i_data[from_index] != 0) {
+			ouichefs_link_inode_data(sb, ino, disk_ino,
+						 from_index, to_index);
+			dirty = true;
 			pr_debug("Copied ino=%u\n", ino);
 		}
 	}
 	if (likely(bh)) {
-		mark_buffer_dirty(bh);
-		sync_dirty_buffer(bh);
+		if (dirty) {
+			mark_buffer_dirty(bh);
+			sync_dirty_buffer(bh);
+			dirty = false;
+		}
 		brelse(bh);
 	}
 
@@ -77,7 +76,7 @@ int ouichefs_snapshot_create(struct super_block *sb, ouichefs_snap_id_t s_id)
 	uint32_t new_snapshot_id = 0;
 	int ret = 0;
 
-	// Find free index for new snapshot
+	/* Find free index for new snapshot */
 	for (ouichefs_snap_index_t j = 1; j < OUICHEFS_MAX_SNAPSHOTS; j++) {
 		if (sbi->snapshots[j].id == 0) {
 			s_info = &sbi->snapshots[j];
@@ -86,7 +85,7 @@ int ouichefs_snapshot_create(struct super_block *sb, ouichefs_snap_id_t s_id)
 		}
 	}
 
-	// Failed to find open spot for new snapshot; Abort!
+	/* Failed to find open spot for new snapshot; Abort! */
 	if (s_info == NULL)
 		return -ENOMEM;
 
@@ -112,7 +111,7 @@ try_next_id:
 	}
 
 
-	//freeze fs to lock it
+	/* Sync all dirty data and prevent changes to this file system */
 	ret = freeze_super(sb);
 	if (ret) {
 		pr_err("file system freeze failed\n");
@@ -144,10 +143,10 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	struct ouichefs_snapshot_info *s_info = NULL;
 	struct buffer_head *bh = NULL;
 	struct ouichefs_inode *disk_ino;
-	struct ouichefs_inode_data *disk_ino_data;
 	uint32_t ino, last_ino_block = 0;
 	ouichefs_snap_index_t s_index;
 	int ret = 0;
+	bool dirty = false;
 
 	// Cannot delete live snapshot
 	if (s_id == 0)
@@ -166,7 +165,7 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 	if (s_info == NULL)
 		return -ENOENT;
 
-	//freeze fs to lock it
+	/* Sync all dirty data and prevent changes to this file system */
 	ret = freeze_super(sb);
 	if (ret) {
 		pr_err("file system freeze failed\n");
@@ -179,37 +178,36 @@ int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id)
 		// Reuse buffer head between ino's if they are in the same block
 		if (OUICHEFS_GET_INODE_BLOCK(ino) != last_ino_block) {
 			if (likely(bh)) {
-				mark_buffer_dirty(bh);
-				sync_dirty_buffer(bh);
+				if (dirty) {
+					mark_buffer_dirty(bh);
+					sync_dirty_buffer(bh);
+					dirty = false;
+				}
 				brelse(bh);
 			}
 			bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(ino));
 			if (unlikely(!bh)) {
 				ret = -EIO;
 				pr_err("Failed to read inode %u while deleting a snapshot\n", ino);
-				// Some data blocks may have got their reference count incremented
-				// already. This means we will likely lose some storage capacity
 				goto cleanup;
 			}
 			last_ino_block = OUICHEFS_GET_INODE_BLOCK(ino);
 		}
 		disk_ino = (struct ouichefs_inode *) bh->b_data;
 		disk_ino += OUICHEFS_GET_INODE_SHIFT(ino);
-		disk_ino_data = &disk_ino->i_data[s_index];
 
 		// Inode exists in requested snapshot
-		if (disk_ino_data->index_block != 0) {
-			ouichefs_put_block(sb,
-				disk_ino_data->index_block,
-				S_ISDIR(disk_ino_data->i_mode) ? OUICHEFS_DIR : OUICHEFS_INDEX);
-			memset(disk_ino_data, 0,
-				sizeof(struct ouichefs_inode_data));
-			ouichefs_try_reclaim_disk_inode(disk_ino, sbi, ino);
+		if (disk_ino->i_data[s_index] != 0) {
+			ouichefs_put_inode_data(sb, ino, disk_ino, s_index);
+			dirty = true;
 		}
 	}
 	if (likely(bh)) {
-		mark_buffer_dirty(bh);
-		sync_dirty_buffer(bh);
+		if (dirty) {
+			mark_buffer_dirty(bh);
+			sync_dirty_buffer(bh);
+			dirty = false;
+		}
 		brelse(bh);
 	}
 
@@ -280,7 +278,7 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 	if (s_info == NULL)
 		return -ENOENT;
 
-	//freeze fs to lock it
+	/* Sync all dirty data and prevent changes to this file system */
 	ret = freeze_super(sb);
 	if (ret) {
 		pr_err("file system freeze failed\n");
@@ -302,7 +300,16 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 	 */
 	copy_all_disk_inodes(sb, s_index, 0);
 
+	/*
+	 * Delete all unused inodes (i_count=0) and update all others in memory.
+	 * Usually, this is only the root inode.
+	 */
+	evict_inodes(sb);
+	spin_lock(&sb->s_inode_list_lock);
 	list_for_each_entry(i, &sb->s_inodes, i_sb_list) {
+		pr_debug("Updating ino %lu, i_count=%u\n",
+			 i->i_ino, atomic_read(&i->i_count));
+
 		/* Load correct inode metadata and invalidate page cache */
 		invalidate_inode_pages2(i->i_mapping);
 		ret = ouichefs_ifill(i, false);
@@ -312,8 +319,17 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 				pr_debug("Mark ino %lu as dead\n", i->i_ino);
 				i->i_flags |= S_DEAD;
 			} else {
-				pr_err("Not implemented: Invalidate ino %lu (c=%u)\n",
-					i->i_ino, atomic_read(&i->i_count));
+				/*
+				 * Since this inode is still referenced, we
+				 * can't just delete it. By invalidating all
+				 * it's pages, no writes can succeed, and by
+				 * setting I_DONTCACHE it will be evicted
+				 * when it is eventually released. This
+				 * should suffice.
+				 */
+				i->i_state |= I_DONTCACHE;
+				pr_debug("Mark ino %lu as I_DONTCACHE\n",
+					 i->i_ino);
 			}
 		} else if (i->i_flags & S_DEAD) {
 			/* Inode does exist, but is marked as dead */
@@ -321,6 +337,7 @@ int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id)
 			i->i_flags &= ~S_DEAD;
 		}
 	}
+	spin_unlock(&sb->s_inode_list_lock);
 
 	//unfreeze fs to unlock it
 	if (thaw_super(sb))

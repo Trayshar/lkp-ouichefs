@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 #include <linux/statfs.h>
 
-#include "bitmap.h"
 #include "ouichefs.h"
 
 static struct kmem_cache *ouichefs_inode_cache;
@@ -53,47 +52,51 @@ static void ouichefs_destroy_inode(struct inode *inode)
 	kmem_cache_free(ouichefs_inode_cache, ci);
 }
 
-void ouichefs_try_reclaim_disk_inode(struct ouichefs_inode *inode,
-				     struct ouichefs_sb_info *sbi, uint32_t ino)
-{
-	/* Check if inode really is no longer used by any snapshot */
-	for (int i = 0; i < OUICHEFS_MAX_SNAPSHOTS; i++) {
-		if (inode->i_data[i].index_block != 0)
-			return;
-	}
-	put_inode(sbi, ino);
-	pr_debug("Freed inode %d!\n", ino);
-
-	/* Check for residual data (cursed) */
-	if (get_first_free_bit((void *)inode,
-			       sizeof(struct ouichefs_inode) / 8))
-		pr_debug("Warning: Found residual data in inode %d!\n", ino);
-}
-
+/*
+ * Writes an inode to disk, dropping associated data if it is deleted.
+ */
 static int ouichefs_write_inode(struct inode *inode,
 				struct writeback_control *wbc)
 {
-	struct ouichefs_inode *disk_inode;
-	struct ouichefs_inode_data *disk_idata;
 	struct ouichefs_inode_info *ci = OUICHEFS_INODE(inode);
 	struct super_block *sb = inode->i_sb;
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
-	struct buffer_head *bh;
+	struct buffer_head *bh = NULL;
+	struct ouichefs_inode *disk_inode;
+	struct ouichefs_inode_data *disk_idata;
 	uint32_t ino = inode->i_ino;
-	uint32_t inode_block = OUICHEFS_GET_INODE_BLOCK(ino);
-	uint32_t inode_shift = OUICHEFS_GET_INODE_SHIFT(ino);
 
 	if (ino >= sbi->nr_inodes)
 		return 0;
 
-	bh = sb_bread(sb, inode_block);
-	if (!bh)
-		return -EIO;
-	disk_inode = (struct ouichefs_inode *)bh->b_data;
-	disk_inode += inode_shift;
+	/*
+	 * This inode was deleted in ouichefs_unlink(), and its associated
+	 * inode data was already released. We cannot write to it anymore,
+	 * which means we're done here. I call this an absolute win!
+	 */
+	if (ci->index_block == 0) {
+		/* This is here for debugging, gate behind a flag maybe? */
+		bh = sb_bread(sb, OUICHEFS_GET_INODE_BLOCK(ino));
+		if (unlikely(!bh))
+			return -EIO;
+		disk_inode = (struct ouichefs_inode *)bh->b_data;
+		disk_inode += OUICHEFS_GET_INODE_SHIFT(ino);
 
-	/* Get the inode data for current snapshot */
-	disk_idata = &disk_inode->i_data[0];
+		if (unlikely(disk_inode->i_data[0])) {
+			pr_err("Dead inode %u has idx %u mapped!",
+			       ino, disk_inode->i_data[0]);
+		} else {
+			pr_debug("Skip writing dead inode %u (idx %u)\n",
+				 ino, disk_inode->i_data[0]);
+		}
+		brelse(bh);
+		return 0;
+	}
+
+	/* Get inode data from disk */
+	disk_idata = ouichefs_get_inode_data(sb, &bh, ino, false, true);
+	if (IS_ERR(disk_idata))
+		return PTR_ERR(disk_idata);
 
 	/* update the mode using what the generic inode has */
 	disk_idata->i_mode = inode->i_mode;
@@ -110,9 +113,7 @@ static int ouichefs_write_inode(struct inode *inode,
 	disk_idata->i_nlink = inode->i_nlink;
 	disk_idata->index_block = ci->index_block;
 
-	/* If we delete this inode on disk, check if we can reclaim it */
-	if (ci->index_block == 0)
-		ouichefs_try_reclaim_disk_inode(disk_inode, sbi, ino);
+	pr_debug("Wrote inode %u with index_block %u\n", ino, ci->index_block);
 
 	mark_buffer_dirty(bh);
 	sync_dirty_buffer(bh);
@@ -135,11 +136,15 @@ static int sync_sb_info(struct super_block *sb, int wait)
 
 	disk_sb->nr_blocks = sbi->nr_blocks;
 	disk_sb->nr_inodes = sbi->nr_inodes;
+	disk_sb->nr_inode_data_entries = sbi->nr_inode_data_entries;
 	disk_sb->nr_istore_blocks = sbi->nr_istore_blocks;
 	disk_sb->nr_ifree_blocks = sbi->nr_ifree_blocks;
 	disk_sb->nr_bfree_blocks = sbi->nr_bfree_blocks;
 	disk_sb->nr_free_inodes = sbi->nr_free_inodes;
 	disk_sb->nr_free_blocks = sbi->nr_free_blocks;
+	disk_sb->nr_free_inode_data_entries = sbi->nr_free_inode_data_entries;
+	disk_sb->nr_idfree_blocks = sbi->nr_idfree_blocks;
+	disk_sb->nr_ididx_blocks = sbi->nr_ididx_blocks;
 	disk_sb->nr_meta_blocks = sbi->nr_meta_blocks;
 	memcpy(disk_sb->snapshots, sbi->snapshots,
 		sizeof(disk_sb->snapshots));
@@ -152,22 +157,22 @@ static int sync_sb_info(struct super_block *sb, int wait)
 	return 0;
 }
 
-static int sync_ifree(struct super_block *sb, int wait)
+static int sync_bitmap(struct super_block *sb, unsigned long *bitmap,
+		       uint32_t nr_blocks, uint32_t start, bool wait)
 {
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh;
 	int i, idx;
 
-	/* Flush free inodes bitmask */
-	for (i = 0; i < sbi->nr_ifree_blocks; i++) {
-		idx = OUICHEFS_GET_IFREE_START(sbi) + i;
+	/* Flush free blocks / inodes / ididx bitmask */
+	for (i = 0; i < nr_blocks; i++) {
+		idx = start + i;
 
 		bh = sb_bread(sb, idx);
 		if (!bh)
 			return -EIO;
 
 		memcpy(bh->b_data,
-		       (void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE,
+		       (void *)bitmap + i * OUICHEFS_BLOCK_SIZE,
 		       OUICHEFS_BLOCK_SIZE);
 
 		mark_buffer_dirty(bh);
@@ -179,30 +184,28 @@ static int sync_ifree(struct super_block *sb, int wait)
 	return 0;
 }
 
-static int sync_bfree(struct super_block *sb, int wait)
+static int load_bitmap(struct super_block *sb, unsigned long **bitmap,
+		       uint32_t nr_blocks, uint32_t start)
 {
-	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct buffer_head *bh;
-	int i, idx;
+	*bitmap = kzalloc(nr_blocks * OUICHEFS_BLOCK_SIZE, GFP_KERNEL);
 
-	/* Flush free blocks bitmask */
-	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
-		idx = OUICHEFS_GET_BFREE_START(sbi) + i;
+	if (!(*bitmap))
+		return -ENOMEM;
+	for (int i = 0; i < nr_blocks; i++) {
+		int idx = start + i;
 
 		bh = sb_bread(sb, idx);
-		if (!bh)
+		if (!bh) {
+			kfree(*bitmap);
 			return -EIO;
+		}
 
-		memcpy(bh->b_data,
-		       (void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-		       OUICHEFS_BLOCK_SIZE);
+		memcpy((void *)(*bitmap) + i * OUICHEFS_BLOCK_SIZE,
+		       bh->b_data, OUICHEFS_BLOCK_SIZE);
 
-		mark_buffer_dirty(bh);
-		if (wait)
-			sync_dirty_buffer(bh);
 		brelse(bh);
 	}
-
 	return 0;
 }
 
@@ -213,21 +216,29 @@ static void ouichefs_put_super(struct super_block *sb)
 	if (sbi) {
 		kfree(sbi->ifree_bitmap);
 		kfree(sbi->bfree_bitmap);
+		kfree(sbi->idfree_bitmap);
 		kfree(sbi);
 	}
 }
 
 static int ouichefs_sync_fs(struct super_block *sb, int wait)
 {
+	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	int ret = 0;
 
 	ret = sync_sb_info(sb, wait);
 	if (ret)
 		return ret;
-	ret = sync_ifree(sb, wait);
+	ret = sync_bitmap(sb, sbi->ifree_bitmap, sbi->nr_ifree_blocks,
+			  OUICHEFS_GET_IFREE_START(sbi), wait);
 	if (ret)
 		return ret;
-	ret = sync_bfree(sb, wait);
+	ret = sync_bitmap(sb, sbi->bfree_bitmap, sbi->nr_bfree_blocks,
+			  OUICHEFS_GET_BFREE_START(sbi), wait);
+	if (ret)
+		return ret;
+	ret = sync_bitmap(sb, sbi->idfree_bitmap, sbi->nr_idfree_blocks,
+			  OUICHEFS_GET_IDFREE_START(sbi), wait);
 	if (ret)
 		return ret;
 
@@ -267,7 +278,7 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	struct ouichefs_sb_info *csb = NULL;
 	struct ouichefs_sb_info *sbi = NULL;
 	struct inode *root_inode = NULL;
-	int ret = 0, i;
+	int ret = 0;
 
 	/* Init sb */
 	sb->s_magic = OUICHEFS_MAGIC;
@@ -285,23 +296,27 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	/* Check magic number */
 	if (csb->magic != sb->s_magic) {
 		pr_err("Wrong magic number\n");
-		ret = -EPERM;
-		goto release;
+		brelse(bh);
+		return -EPERM;
 	}
 
 	/* Alloc sb_info */
 	sbi = kzalloc(sizeof(struct ouichefs_sb_info), GFP_KERNEL);
 	if (!sbi) {
-		ret = -ENOMEM;
-		goto release;
+		brelse(bh);
+		return -ENOMEM;
 	}
 	sbi->nr_blocks = csb->nr_blocks;
 	sbi->nr_inodes = csb->nr_inodes;
+	sbi->nr_inode_data_entries = csb->nr_inode_data_entries;
 	sbi->nr_istore_blocks = csb->nr_istore_blocks;
 	sbi->nr_ifree_blocks = csb->nr_ifree_blocks;
 	sbi->nr_bfree_blocks = csb->nr_bfree_blocks;
 	sbi->nr_free_inodes = csb->nr_free_inodes;
 	sbi->nr_free_blocks = csb->nr_free_blocks;
+	sbi->nr_free_inode_data_entries = csb->nr_free_inode_data_entries;
+	sbi->nr_idfree_blocks = csb->nr_idfree_blocks;
+	sbi->nr_ididx_blocks = csb->nr_ididx_blocks;
 	sbi->nr_meta_blocks = csb->nr_meta_blocks;
 	memcpy(sbi->snapshots, csb->snapshots,
 		sizeof(sbi->snapshots));
@@ -310,55 +325,32 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	brelse(bh);
 
 	/* Alloc and copy ifree_bitmap */
-	sbi->ifree_bitmap =
-		kzalloc(sbi->nr_ifree_blocks * OUICHEFS_BLOCK_SIZE, GFP_KERNEL);
-	if (!sbi->ifree_bitmap) {
-		ret = -ENOMEM;
+	if (load_bitmap(sb, &sbi->ifree_bitmap, sbi->nr_ifree_blocks,
+			OUICHEFS_GET_IFREE_START(sbi)))
 		goto free_sbi;
-	}
-	for (i = 0; i < sbi->nr_ifree_blocks; i++) {
-		int idx = OUICHEFS_GET_IFREE_START(sbi) + i;
-
-		bh = sb_bread(sb, idx);
-		if (!bh) {
-			ret = -EIO;
-			goto free_ifree;
-		}
-
-		memcpy((void *)sbi->ifree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-		       bh->b_data, OUICHEFS_BLOCK_SIZE);
-
-		brelse(bh);
-	}
 
 	/* Alloc and copy bfree_bitmap */
-	sbi->bfree_bitmap =
-		kzalloc(sbi->nr_bfree_blocks * OUICHEFS_BLOCK_SIZE, GFP_KERNEL);
-	if (!sbi->bfree_bitmap) {
-		ret = -ENOMEM;
+	if (load_bitmap(sb, &sbi->bfree_bitmap, sbi->nr_bfree_blocks,
+			OUICHEFS_GET_BFREE_START(sbi)))
 		goto free_ifree;
-	}
-	for (i = 0; i < sbi->nr_bfree_blocks; i++) {
-		int idx = OUICHEFS_GET_BFREE_START(sbi) + i;
 
-		bh = sb_bread(sb, idx);
-		if (!bh) {
-			ret = -EIO;
-			goto free_bfree;
-		}
-
-		memcpy((void *)sbi->bfree_bitmap + i * OUICHEFS_BLOCK_SIZE,
-		       bh->b_data, OUICHEFS_BLOCK_SIZE);
-
-		brelse(bh);
-	}
+	/* Alloc and copy idfree_bitmap */
+	if (load_bitmap(sb, &sbi->idfree_bitmap, sbi->nr_idfree_blocks,
+			OUICHEFS_GET_IDFREE_START(sbi)))
+		goto free_bfree;
 
 	/* Create root inode */
 	root_inode = ouichefs_iget(sb, 1, false);
 	if (IS_ERR(root_inode)) {
 		ret = PTR_ERR(root_inode);
 		pr_warn("Failed to load root inode: %d\n", ret);
-		goto free_bfree;
+		goto free_idfree;
+	}
+	if (!S_ISDIR(root_inode->i_mode)) {
+		ret = -ENOTDIR;
+		pr_debug("Failed to load root inode: not an directory, mode is %u\n",
+			 root_inode->i_mode);
+		goto iput;
 	}
 	inode_init_owner(&nop_mnt_idmap, root_inode, NULL, root_inode->i_mode);
 	sb->s_root = d_make_root(root_inode);
@@ -368,38 +360,45 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	pr_debug("Loaded superblock:\n"
-			"\tnr_blocks=%u\n"
-			"\tnr_inodes=%u (istore=%u blocks)\n"
-			"\tnr_ifree_blocks=%u\n"
-			"\tnr_bfree_blocks=%u\n"
-			"\tnr_meta_blocks=%u\n"
-			"\tnr_free_inodes=%u\n"
-			"\tnr_free_blocks=%u\n"
-			"\tINODE_START=%u\n"
-			"\tIFREE_START=%u\n"
-			"\tBFREE_START=%u\n"
-			"\tMETA_START=%u\n"
-			"\tDATA_START=%u\n",
-			sbi->nr_blocks, sbi->nr_inodes, sbi->nr_istore_blocks,
-			sbi->nr_ifree_blocks, sbi->nr_bfree_blocks, sbi->nr_meta_blocks,
-			sbi->nr_free_inodes, sbi->nr_free_blocks, OUICHEFS_GET_INODE_BLOCK(0),
-			OUICHEFS_GET_IFREE_START(sbi), OUICHEFS_GET_BFREE_START(sbi),
-			OUICHEFS_GET_META_BLOCK(OUICHEFS_GET_DATA_START(sbi) + 1, sbi),
-			OUICHEFS_GET_DATA_START(sbi)
-		);
+		 "\tnr_blocks=%u\n"
+		 "\tnr_inodes=%u (istore=%u blocks)\n"
+		 "\tnr_inode_data_entries=%u (ididx=%u blocks)\n"
+		 "\tnr_ifree_blocks=%u\n"
+		 "\tnr_bfree_blocks=%u\n"
+		 "\tnr_idfree_blocks=%u\n"
+		 "\tnr_meta_blocks=%u\n"
+		 "\tnr_free_inodes=%u\n"
+		 "\tnr_free_blocks=%u\n"
+		 "\tnr_free_inode_data_entries=%u\n"
+		 "\tINODE_START=%u\n"
+		 "\tIFREE_START=%u\n"
+		 "\tBFREE_START=%u\n"
+		 "\tMETA_START=%u\n"
+		 "\tDATA_START=%u\n",
+		 sbi->nr_blocks, sbi->nr_inodes, sbi->nr_istore_blocks,
+		 sbi->nr_inode_data_entries, sbi->nr_ididx_blocks,
+		 sbi->nr_ifree_blocks, sbi->nr_bfree_blocks,
+		 sbi->nr_idfree_blocks, sbi->nr_meta_blocks,
+		 sbi->nr_free_inodes, sbi->nr_free_blocks,
+		 sbi->nr_free_inode_data_entries,
+		 OUICHEFS_GET_INODE_BLOCK(0), OUICHEFS_GET_IFREE_START(sbi),
+		 OUICHEFS_GET_BFREE_START(sbi),
+		 OUICHEFS_GET_META_BLOCK(OUICHEFS_GET_DATA_START(sbi) + 1, sbi),
+		 OUICHEFS_GET_DATA_START(sbi)
+	);
 
 	return 0;
 
 iput:
 	iput(root_inode);
+free_idfree:
+	kfree(sbi->idfree_bitmap);
 free_bfree:
 	kfree(sbi->bfree_bitmap);
 free_ifree:
 	kfree(sbi->ifree_bitmap);
 free_sbi:
 	kfree(sbi);
-release:
-	brelse(bh);
 
 	return ret;
 }

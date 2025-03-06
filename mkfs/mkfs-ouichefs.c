@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdint.h>
-#include <errno.h>
 #include <endian.h>
 #include <string.h>
 
@@ -17,8 +16,9 @@
 #define OUICHEFS_MAX_FILESIZE (1 << 22) /* 4 MiB */
 #define OUICHEFS_FILENAME_LEN 28
 #define OUICHEFS_MAX_SUBFILES 128
-#define OUICHEFS_MAX_SNAPSHOTS 25
+#define OUICHEFS_MAX_SNAPSHOTS 32
 #define OUICHEFS_META_BLOCK_LEN (OUICHEFS_BLOCK_SIZE / sizeof(uint8_t))
+#define OUICHEFS_INDEX_BLOCK_LEN (OUICHEFS_BLOCK_SIZE / sizeof(uint32_t))
 
 struct ouichefs_inode_data {
 	uint32_t i_mode; /* File mode */
@@ -34,17 +34,30 @@ struct ouichefs_inode_data {
 	uint32_t i_blocks; /* Block count */
 	uint32_t i_nlink; /* Hard links count */
 	uint32_t index_block; /* Index block / dir block of this inode */
+	uint8_t refcount; /* How many inodes link to this */
 };
 
-/* Inode are saved in the 'inode store' region. They are just a mapping between
- * snapshots and actual inode data. Eventually the actual data should live in
- * the data block region, this is just a cursed kludge. */
+/* Stored in the id_idx region. Links inode data entry numbers to a block. */
+struct ouichefs_inode_data_index_block {
+	uint32_t blocks[OUICHEFS_INDEX_BLOCK_LEN];
+};
+
+/*
+ * Inodes are saved in the 'inode store' region. They are just a mapping between
+ * snapshots and actual inode data. This data lives in the data blocks and is
+ * indexed by yet another number. "id_idx" blocks are used to map this number
+ * to the actual data block holding the inode data.
+ */
 struct ouichefs_inode {
-	struct ouichefs_inode_data i_data[OUICHEFS_MAX_SNAPSHOTS];
+	uint32_t i_data[OUICHEFS_MAX_SNAPSHOTS];
 };
 
 #define OUICHEFS_INODES_PER_BLOCK \
 	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode))
+#define OUICHEFS_IDE_PER_DATA_BLOCK \
+	(OUICHEFS_BLOCK_SIZE / sizeof(struct ouichefs_inode_data))
+#define OUICHEFS_IDE_PER_INDEX_BLOCK \
+	(OUICHEFS_IDE_PER_DATA_BLOCK * OUICHEFS_INDEX_BLOCK_LEN)
 
 struct ouichefs_snapshot_info {
 	int64_t m_time; /* Modification time (sec) */
@@ -64,6 +77,10 @@ struct ouichefs_superblock {
 	uint32_t nr_free_inodes; /* Number of free inodes */
 	uint32_t nr_free_blocks; /* Number of free blocks */
 
+	uint32_t nr_inode_data_entries; /* Maximal number of inode data entries */
+	uint32_t nr_free_inode_data_entries; /* Number of free inode data entries */
+	uint32_t nr_idfree_blocks; /* Number of inode data free bitmap blocks */
+	uint32_t nr_ididx_blocks; /* Number of inode data index blocks */
 	uint32_t nr_meta_blocks; /* Number of metadata blocks */
 
 	/* List of all snapshots */
@@ -115,8 +132,9 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 {
 	int ret;
 	struct ouichefs_superblock *sb;
-	uint32_t nr_inodes = 0, nr_blocks = 0, nr_ifree_blocks = 0;
-	uint32_t nr_bfree_blocks = 0, nr_data_blocks = 0, nr_istore_blocks = 0;
+	uint32_t nr_inodes = 0, nr_blocks = 0, nr_inode_data_entries;
+	uint32_t nr_ifree_blocks = 0, nr_bfree_blocks = 0, nr_idfree_blocks = 0;
+	uint32_t nr_data_blocks = 0, nr_istore_blocks = 0, nr_ididx_blocks = 0;
 	uint32_t nr_meta_blocks = 0, mod;
 
 	sb = malloc(sizeof(struct ouichefs_superblock));
@@ -125,14 +143,18 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 
 	nr_blocks = fstats->st_size / OUICHEFS_BLOCK_SIZE;
 	nr_inodes = nr_blocks;
+	nr_inode_data_entries = nr_inodes * OUICHEFS_MAX_SNAPSHOTS;
 	mod = nr_inodes % OUICHEFS_INODES_PER_BLOCK;
 	if (mod != 0)
 		nr_inodes += mod;
 	nr_istore_blocks = idiv_ceil(nr_inodes, OUICHEFS_INODES_PER_BLOCK);
 	nr_ifree_blocks = idiv_ceil(nr_inodes, OUICHEFS_BLOCK_SIZE * 8);
 	nr_bfree_blocks = idiv_ceil(nr_blocks, OUICHEFS_BLOCK_SIZE * 8);
+	nr_idfree_blocks = idiv_ceil(nr_inode_data_entries, OUICHEFS_BLOCK_SIZE * 8);
+	nr_ididx_blocks = idiv_ceil(nr_inode_data_entries, OUICHEFS_IDE_PER_INDEX_BLOCK);
+
 	nr_data_blocks = nr_blocks - 1 - nr_istore_blocks - nr_ifree_blocks -
-			 nr_bfree_blocks;
+			 nr_bfree_blocks - nr_idfree_blocks - nr_ididx_blocks;
 
 	// Partition data blocks such that every data block has a metadata block
 	// TODO: This leaves us with a bit more metadata blocks then we actually need
@@ -143,14 +165,18 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 	sb->magic = htole32(OUICHEFS_MAGIC);
 	sb->nr_blocks = htole32(nr_blocks);
 	sb->nr_inodes = htole32(nr_inodes);
+	sb->nr_inode_data_entries = htole32(nr_inode_data_entries);
 	sb->nr_istore_blocks = htole32(nr_istore_blocks);
 	sb->nr_ifree_blocks = htole32(nr_ifree_blocks);
 	sb->nr_bfree_blocks = htole32(nr_bfree_blocks);
+	sb->nr_idfree_blocks = htole32(nr_idfree_blocks);
+	sb->nr_ididx_blocks = htole32(nr_ididx_blocks);
 	sb->nr_meta_blocks = htole32(nr_meta_blocks);
 	// The -1 are the root inode and the dir block it points to
 	sb->nr_free_inodes = htole32(nr_inodes - 1);
 	sb->nr_free_blocks = htole32(nr_data_blocks - 1);
-	sb->snapshots[0].m_time = htole32(0);
+	sb->nr_free_inode_data_entries = htole32(nr_inode_data_entries - 1);
+	sb->snapshots[0].m_time = htole64(0);
 	sb->snapshots[0].id = 0;
 
 	ret = write(fd, sb, sizeof(struct ouichefs_superblock));
@@ -163,15 +189,21 @@ static struct ouichefs_superblock *write_superblock(int fd, struct stat *fstats)
 	       "\tmagic=%#x\n"
 	       "\tnr_blocks=%u\n"
 	       "\tnr_inodes=%u (istore=%u blocks)\n"
+	       "\tnr_inode_data_entries=%u (ididx=%u blocks)\n"
 	       "\tnr_ifree_blocks=%u\n"
 	       "\tnr_bfree_blocks=%u\n"
+	       "\tnr_idfree_blocks=%u\n"
 	       "\tnr_meta_blocks=%u\n"
 	       "\tnr_free_inodes=%u\n"
-	       "\tnr_free_blocks=%u\n",
+	       "\tnr_free_blocks=%u\n"
+	       "\tnr_free_inode_data_entries=%u\n",
 	       sizeof(struct ouichefs_superblock), sb->magic, sb->nr_blocks,
-	       sb->nr_inodes, sb->nr_istore_blocks, sb->nr_ifree_blocks,
-	       sb->nr_bfree_blocks, sb->nr_meta_blocks, sb->nr_free_inodes,
-	       sb->nr_free_blocks);
+	       sb->nr_inodes, sb->nr_istore_blocks,
+	       sb->nr_inode_data_entries, sb->nr_ididx_blocks,
+	       sb->nr_ifree_blocks, sb->nr_bfree_blocks, sb->nr_idfree_blocks,
+	       sb->nr_meta_blocks, sb->nr_free_inodes, sb->nr_free_blocks,
+	       sb->nr_free_inode_data_entries
+	);
 
 	return sb;
 }
@@ -181,9 +213,7 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 	int ret = 0;
 	uint32_t i;
 	struct ouichefs_inode *inode;
-	struct ouichefs_inode_data *idata;
 	char *block;
-	uint32_t first_data_block;
 
 	/* Allocate a zeroed block for inode store */
 	block = malloc(OUICHEFS_BLOCK_SIZE);
@@ -191,24 +221,9 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 		return -1;
 	memset(block, 0, OUICHEFS_BLOCK_SIZE);
 
-	/* Root inode (inode 1) */
+	/* Root inode (inode 1) points to first inode data entry (idx 1) */
 	inode = (struct ouichefs_inode *)block + 1;
-	first_data_block = 1 + le32toh(sb->nr_bfree_blocks) +
-			   le32toh(sb->nr_ifree_blocks) +
-			   le32toh(sb->nr_meta_blocks) +
-			   le32toh(sb->nr_istore_blocks);
-	idata = &inode->i_data[0];
-	idata->i_mode =
-		htole32(S_IFDIR | S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR |
-			S_IWGRP | S_IXUSR | S_IXGRP | S_IXOTH);
-	idata->i_uid = 0;
-	idata->i_gid = 0;
-	idata->i_size = htole32(OUICHEFS_BLOCK_SIZE);
-	idata->i_ctime = idata->i_atime = idata->i_mtime = htole32(0);
-	idata->i_nctime = idata->i_natime = idata->i_nmtime = htole64(0);
-	idata->i_blocks = htole32(1);
-	idata->i_nlink = htole32(2);
-	idata->index_block = htole32(first_data_block);
+	inode->i_data[0] = 1;
 
 	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
 	if (ret != OUICHEFS_BLOCK_SIZE) {
@@ -227,9 +242,10 @@ static int write_inode_store(int fd, struct ouichefs_superblock *sb)
 	}
 	ret = 0;
 
-	printf("Inode store: wrote %d blocks\n"
+	printf("Inode store: wrote %d blocks (lseek %ld)\n"
 	       "\tinode size = %ld B\n",
-	       i, sizeof(struct ouichefs_inode));
+	       i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE,
+	       sizeof(struct ouichefs_inode));
 
 end:
 	free(block);
@@ -270,7 +286,8 @@ static int write_ifree_blocks(int fd, struct ouichefs_superblock *sb)
 	}
 	ret = 0;
 
-	printf("Ifree blocks: wrote %d blocks\n", i);
+	printf("Ifree blocks: wrote %d blocks (lseek %ld)\n",
+		i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
 
 end:
 	free(block);
@@ -287,7 +304,9 @@ static int write_bfree_blocks(int fd, struct ouichefs_superblock *sb)
 	uint32_t nr_used = le32toh(sb->nr_istore_blocks) +
 			   le32toh(sb->nr_ifree_blocks) +
 			   le32toh(sb->nr_bfree_blocks) +
-			   le32toh(sb->nr_meta_blocks) + 2;
+			   le32toh(sb->nr_idfree_blocks) +
+			   le32toh(sb->nr_ididx_blocks) +
+			   le32toh(sb->nr_meta_blocks) + 3;
 
 	block = malloc(OUICHEFS_BLOCK_SIZE);
 	if (!block)
@@ -328,7 +347,98 @@ static int write_bfree_blocks(int fd, struct ouichefs_superblock *sb)
 	}
 	ret = 0;
 
-	printf("Bfree blocks: wrote %d blocks\n", i);
+	printf("Bfree blocks: wrote %d blocks (lseek %ld)\n",
+		i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
+end:
+	free(block);
+
+	return ret;
+}
+
+static int write_idfree_blocks(int fd, struct ouichefs_superblock *sb)
+{
+	int ret = 0;
+	uint32_t i;
+	char *block;
+	uint64_t *idfree;
+
+	block = malloc(OUICHEFS_BLOCK_SIZE);
+	if (!block)
+		return -1;
+	idfree = (uint64_t *)block;
+
+	/* Set all bits to 1 */
+	memset(idfree, 0xff, OUICHEFS_BLOCK_SIZE);
+
+	/* First ifree block, containing first used inode */
+	idfree[0] = htole64(0xfffffffffffffffc);
+	ret = write(fd, idfree, OUICHEFS_BLOCK_SIZE);
+	if (ret != OUICHEFS_BLOCK_SIZE) {
+		ret = -1;
+		goto end;
+	}
+
+	/* All ifree blocks except the one containing 2 first inodes */
+	idfree[0] = 0xffffffffffffffff;
+	for (i = 1; i < le32toh(sb->nr_idfree_blocks); i++) {
+		ret = write(fd, idfree, OUICHEFS_BLOCK_SIZE);
+		if (ret != OUICHEFS_BLOCK_SIZE) {
+			ret = -1;
+			goto end;
+		}
+	}
+	ret = 0;
+
+	printf("Idfree blocks: wrote %d blocks (lseek %ld)\n",
+		i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
+
+end:
+	free(block);
+
+	return ret;
+}
+
+
+static int write_ididx_blocks(int fd, struct ouichefs_superblock *sb)
+{
+	int ret = 0, i = 0;
+	char *block;
+	struct ouichefs_inode_data_index_block *ididx;
+	uint32_t second_data_block = 2 + le32toh(sb->nr_istore_blocks) +
+				     le32toh(sb->nr_bfree_blocks) +
+				     le32toh(sb->nr_ifree_blocks) +
+				     le32toh(sb->nr_idfree_blocks) +
+				     le32toh(sb->nr_ididx_blocks) +
+				     le32toh(sb->nr_meta_blocks);
+
+	block = malloc(OUICHEFS_BLOCK_SIZE);
+	if (!block)
+		return -1;
+	memset(block, 0, OUICHEFS_BLOCK_SIZE);
+
+	// First ididx block must link root inode (1) with idx 1,
+	// which is in the 0th inode data block (at pos 1)
+	ididx = (struct ouichefs_inode_data_index_block *) block;
+	ididx->blocks[0] = second_data_block;
+	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
+	if (ret != OUICHEFS_BLOCK_SIZE) {
+		ret = -1;
+		goto end;
+	}
+
+	// Write other blocks
+	memset(block, 0, OUICHEFS_BLOCK_SIZE);
+	for (i = 1; i < le32toh(sb->nr_ididx_blocks); i++) {
+		ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
+		if (ret != OUICHEFS_BLOCK_SIZE) {
+			ret = -1;
+			goto end;
+		}
+	}
+	ret = 0;
+
+	printf("Inode data index blocks: wrote %u blocks (lseek %ld)\n",
+		i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
 end:
 	free(block);
 
@@ -346,9 +456,12 @@ static int write_metadata_blocks(int fd, struct ouichefs_superblock *sb)
 		return -1;
 	memset(block, 0, OUICHEFS_BLOCK_SIZE);
 
-	// First metadata block must have the dir_block counter set to 1
+	// First metadata block must have the refcount counter set to 1
+	// since the index block uses the first block as its dir block
+	// The second block is used as it's inode_data
 	meta = (struct ouichefs_metadata_block *) block;
 	meta->refcount[0] = 1;
+	meta->refcount[1] = 1;
 	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
 	if (ret != OUICHEFS_BLOCK_SIZE) {
 		ret = -1;
@@ -366,31 +479,8 @@ static int write_metadata_blocks(int fd, struct ouichefs_superblock *sb)
 	}
 	ret = 0;
 
-	printf("Metadata blocks: wrote %u blocks\n", i);
-end:
-	free(block);
-
-	return ret;
-}
-
-static int write_root_index_block(int fd, struct ouichefs_superblock *sb)
-{
-	int ret = 0;
-	char *block;
-
-	block = malloc(OUICHEFS_BLOCK_SIZE);
-	if (!block)
-		return -1;
-	memset(block, 0, OUICHEFS_BLOCK_SIZE);
-
-	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
-	if (ret != OUICHEFS_BLOCK_SIZE) {
-		ret = -1;
-		goto end;
-	}
-	ret = 0;
-
-	printf("Root index block: wrote 1 block\n");
+	printf("Metadata blocks: wrote %u blocks (lseek %ld)\n",
+		i, lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
 end:
 	free(block);
 
@@ -400,19 +490,57 @@ end:
 static int write_data_blocks(int fd, struct ouichefs_superblock *sb)
 {
 	int ret = 0;
-	/* struct ouichefs_dir_block root_block; */
-	/* struct ouichefs_file_index_block foo_block; */
-	/* char *foo; */
-	/* uint32_t first_block = le32toh(sb->nr_istore_blocks) + */
-	/* 	le32toh(sb->nr_ifree_blocks) + le32toh(sb->nr_bfree_blocks) + 3; */
+	char *block;
+	struct ouichefs_inode_data *idata;
+	uint32_t first_data_block = 1 + le32toh(sb->nr_istore_blocks) +
+					le32toh(sb->nr_bfree_blocks) +
+					le32toh(sb->nr_ifree_blocks) +
+					le32toh(sb->nr_idfree_blocks) +
+					le32toh(sb->nr_ididx_blocks) +
+					le32toh(sb->nr_meta_blocks);
 
-	/* foo = malloc(OUICHEFS_BLOCK_SIZE); */
-	/* if (!foo) */
-	/* 	return -1; */
-	/* memset(foo, 0, OUICHEFS_BLOCK_SIZE); */
+	block = malloc(OUICHEFS_BLOCK_SIZE);
+	if (!block)
+		return -1;
+	memset(block, 0, OUICHEFS_BLOCK_SIZE);
 
-	/* end: */
-	/* 	free(foo); */
+	// Write first data block; Its the dir_block for the root inode
+	// and it is empty
+	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
+	if (ret != OUICHEFS_BLOCK_SIZE) {
+		ret = -1;
+		goto end;
+	}
+	printf("Root index block: wrote 1 block\n");
+
+	// Second data block is used as inode_data for root inode
+	// Inside this block, the second slot (index 1) holds the actual data
+	idata = (struct ouichefs_inode_data *) block;
+	idata += 1;
+
+	idata->i_mode =
+		htole32(S_IFDIR | S_IRUSR | S_IRGRP | S_IROTH | S_IWUSR |
+			S_IWGRP | S_IXUSR | S_IXGRP | S_IXOTH);
+	idata->i_uid = 0;
+	idata->i_gid = 0;
+	idata->i_size = htole32(OUICHEFS_BLOCK_SIZE);
+	idata->i_ctime = idata->i_atime = idata->i_mtime = htole32(0);
+	idata->i_nctime = idata->i_natime = idata->i_nmtime = htole64(0);
+	idata->i_blocks = htole32(1);
+	idata->i_nlink = htole32(2);
+	idata->index_block = htole32(first_data_block);
+	idata->refcount = 1;
+
+	ret = write(fd, block, OUICHEFS_BLOCK_SIZE);
+	if (ret != OUICHEFS_BLOCK_SIZE) {
+		ret = -1;
+		goto end;
+	}
+	printf("Inode data blocks: wrote 1 block (lseek %ld)\n",
+		lseek(fd, 0, SEEK_CUR) / OUICHEFS_BLOCK_SIZE);
+	ret = 0;
+end:
+	free(block);
 
 	return ret;
 }
@@ -486,18 +614,26 @@ int main(int argc, char **argv)
 		goto free_sb;
 	}
 
-	/* Write metadata blocks */
-	ret = write_metadata_blocks(fd, sb);
+	/* Write inode data block free bitmap blocks */
+	ret = write_idfree_blocks(fd, sb);
 	if (ret != 0) {
-		perror("write_metadata_blocks()");
+		perror("write_idfree_blocks()");
 		ret = EXIT_FAILURE;
 		goto free_sb;
 	}
 
-	/* Write the root index block */
-	ret = write_root_index_block(fd, sb);
+	/* Write inode index data blocks */
+	ret = write_ididx_blocks(fd, sb);
 	if (ret != 0) {
-		perror("write_root_index_block()");
+		perror("write_ididx_blocks()");
+		ret = EXIT_FAILURE;
+		goto free_sb;
+	}
+
+	/* Write metadata blocks */
+	ret = write_metadata_blocks(fd, sb);
+	if (ret != 0) {
+		perror("write_metadata_blocks()");
 		ret = EXIT_FAILURE;
 		goto free_sb;
 	}
