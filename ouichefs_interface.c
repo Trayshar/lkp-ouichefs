@@ -70,9 +70,9 @@ static const struct sysfs_ops partition_sysfs_ops = {
 	.store = partition_attr_store,
 };
 
-static int add_snapshot(struct ouichefs_partition *part)
+static int add_snapshot(struct ouichefs_partition *part, unsigned int id)
 {
-	int ret = ouichefs_snapshot_create(part->sb);
+	int ret = ouichefs_snapshot_create(part->sb, id);
 	if (!ret)
 		pr_info("ouichefs: Created snapshot in partition %s\n", part->name);
 	return ret;
@@ -99,7 +99,14 @@ static int restore_snapshot(struct ouichefs_partition *part, unsigned int id)
 static ssize_t create_store(struct ouichefs_partition *part, struct partition_attribute *attr,
 			      const char *buf, size_t count)
 {
-	int ret = add_snapshot(part);
+	unsigned int id;
+	int ret;
+
+	/* If no valid id is given, just pick one */
+	if (kstrtouint(buf, 0, &id))
+		id = 0;
+
+	ret = add_snapshot(part, id);
 
 	if (ret)
 		return ret;

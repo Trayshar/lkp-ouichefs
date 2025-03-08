@@ -69,12 +69,12 @@ static int copy_all_disk_inodes(struct super_block *sb,
 	return 0;
 }
 
-int ouichefs_snapshot_create(struct super_block *sb)
+int ouichefs_snapshot_create(struct super_block *sb, ouichefs_snap_id_t s_id)
 {
 	struct ouichefs_sb_info *sbi = OUICHEFS_SB(sb);
 	struct ouichefs_snapshot_info *s_info = NULL;
 	uint8_t new_snapshot_index;
-	uint32_t new_snapshot_id;
+	uint32_t new_snapshot_id = 0;
 	int ret = 0;
 
 	// Find free index for new snapshot
@@ -91,16 +91,26 @@ int ouichefs_snapshot_create(struct super_block *sb)
 		return -ENOMEM;
 
 	/* Find smallest free snapshot id */
-	new_snapshot_id = 0;
-	while (true) {
+	if (s_id == 0) {
+		/* Find smallest free snapshot id */
+		while (true) {
 try_next_id:
-		new_snapshot_id++;
-		for (uint8_t j = 1; j < OUICHEFS_MAX_SNAPSHOTS; j++) {
-			if (sbi->snapshots[j].id == new_snapshot_id)
-				goto try_next_id;
+			new_snapshot_id++;
+			for (uint8_t j = 1; j < OUICHEFS_MAX_SNAPSHOTS; j++) {
+				if (sbi->snapshots[j].id == new_snapshot_id)
+					goto try_next_id;
+			}
+			break;
 		}
-		break;
+	} else {
+		/* Check if given ID is free */
+		for (uint8_t j = 1; j < OUICHEFS_MAX_SNAPSHOTS; j++) {
+			if (sbi->snapshots[j].id == s_id)
+				return -EINVAL;
+		}
+		new_snapshot_id = s_id;
 	}
+
 
 	//freeze fs to lock it
 	ret = freeze_super(sb);

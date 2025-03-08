@@ -157,7 +157,7 @@ void ouichefs_put_block(struct super_block *sb, uint32_t bno,
 			enum ouichefs_datablock_type b_type);
 
 /* snapshot functions */
-int ouichefs_snapshot_create(struct super_block *sb);
+int ouichefs_snapshot_create(struct super_block *sb, ouichefs_snap_id_t s_id);
 int ouichefs_snapshot_delete(struct super_block *sb, ouichefs_snap_id_t s_id);
 int ouichefs_snapshot_list(struct super_block *sb, char *buf);
 int ouichefs_snapshot_restore(struct super_block *sb, ouichefs_snap_id_t s_id);
