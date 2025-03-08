@@ -11,6 +11,7 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/statfs.h>
 
 #include "ouichefs.h"
@@ -325,16 +326,19 @@ int ouichefs_fill_super(struct super_block *sb, void *data, int silent)
 	brelse(bh);
 
 	/* Alloc and copy ifree_bitmap */
+	spin_lock_init(&sbi->ifree_lock);
 	if (load_bitmap(sb, &sbi->ifree_bitmap, sbi->nr_ifree_blocks,
 			OUICHEFS_GET_IFREE_START(sbi)))
 		goto free_sbi;
 
 	/* Alloc and copy bfree_bitmap */
+	spin_lock_init(&sbi->bfree_lock);
 	if (load_bitmap(sb, &sbi->bfree_bitmap, sbi->nr_bfree_blocks,
 			OUICHEFS_GET_BFREE_START(sbi)))
 		goto free_ifree;
 
 	/* Alloc and copy idfree_bitmap */
+	spin_lock_init(&sbi->idfree_lock);
 	if (load_bitmap(sb, &sbi->idfree_bitmap, sbi->nr_idfree_blocks,
 			OUICHEFS_GET_IDFREE_START(sbi)))
 		goto free_bfree;

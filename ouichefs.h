@@ -7,6 +7,7 @@
 #ifndef _OUICHEFS_H
 #define _OUICHEFS_H
 
+#include "linux/spinlock_types.h"
 #include <linux/build_bug.h>
 #include <linux/fs.h>
 #include <linux/time64.h>
@@ -131,10 +132,19 @@ struct ouichefs_sb_info {
 	/* List of all snapshots. */
 	struct ouichefs_snapshot_info snapshots[OUICHEFS_MAX_SNAPSHOTS];
 
-	/* THESE MUST ALWAYS BE LAST */
+	/* All in-memory fields must come after this comment! */
+	/*
+	 * TODO: This scales really poorly with large file systems, especially
+	 * 'idfree_bitmap'. Switch to direct buffer_head access after a certain
+	 * 'nr_inode_data_entries' threshold is reached.
+	 */
 	unsigned long *ifree_bitmap; /* In-memory free inodes bitmap */
 	unsigned long *bfree_bitmap; /* In-memory free blocks bitmap */
 	unsigned long *idfree_bitmap; /* In-memory free blocks bitmap */
+
+	spinlock_t ifree_lock; /* Lock for ifree_bitmap */
+	spinlock_t bfree_lock; /* Lock for bfree_bitmap */
+	spinlock_t idfree_lock; /* Lock for bfree_bitmap */
 };
 
 struct ouichefs_metadata_block {
