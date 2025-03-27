@@ -1,4 +1,5 @@
 #!/bin/bash
+# Based on https://github.com/webispy/checkpatch-action
 
 # To debug the current script, please uncomment the following 'set -x' line
 #set -x

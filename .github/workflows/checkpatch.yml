@@ -1,4 +1,4 @@
-name: checkpatch review
+name: checkpatch review # based on https://github.com/webispy/checkpatch-action
 on: [pull_request]
 jobs:
   my_review:

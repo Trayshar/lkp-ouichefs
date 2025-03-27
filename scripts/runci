@@ -1,4 +1,5 @@
 #!/bin/bash -e
+# Written by the Linux kernel Programming team under GPL2, adapted by me 
 modulename="ouichefs"
 
 sysfs="/sys/fs/ouichefs"

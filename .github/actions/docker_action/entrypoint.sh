@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Based on https://github.com/webispy/checkpatch-action
 
 echo "Start..."
 echo "Workflow: $GITHUB_WORKFLOW"
